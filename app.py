@@ -8,7 +8,6 @@ import requests
 import os
 import logging
 from concurrent.futures import ThreadPoolExecutor
-import optionchain
 
 # ====================================================
 # 🌐 Flask App Setup
@@ -518,17 +517,8 @@ def index():
 
 @app.route("/option-chain")
 def option_chain_view():
-    try:
-        processed_data, spot_price, atm_strike = optionchain.get_option_chain_data()
-        if processed_data:
-            return render_template("option_chain.html", data=processed_data, spot_price=spot_price, atm_strike=atm_strike)
-        else:
-            flash("Failed to fetch Option Chain data from NSE.", "error")
-            return redirect(url_for("index"))
-    except Exception as e:
-        logging.error(f"Error in option chain view: {e}")
-        flash(f"Error: {e}", "error")
-        return redirect(url_for("index"))
+    flash("Option Chain feature is temporarily unavailable due to NSE API restrictions.", "info")
+    return redirect(url_for("index"))
 
 # ====================================================
 # 🚀 Run App
