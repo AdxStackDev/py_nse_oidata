@@ -8,8 +8,17 @@ import requests
 import os
 import logging
 import json
-import pytz
 from concurrent.futures import ThreadPoolExecutor
+
+# Try to import pytz, fallback to basic timezone handling
+try:
+    import pytz
+    IST = pytz.timezone('Asia/Kolkata')
+    TIMEZONE_AVAILABLE = True
+except ImportError:
+    logging.warning("pytz not available, using basic timezone handling")
+    IST = None
+    TIMEZONE_AVAILABLE = False
 
 # ====================================================
 # 🌐 Flask App Setup
@@ -40,9 +49,6 @@ BASE_URL = "https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_{}
 NSE_OPTION_CHAIN_URL = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
 NSE_HOME_URL = "https://www.nseindia.com"
 
-# IST timezone
-IST = pytz.timezone('Asia/Kolkata')
-
 # Cache directory for CSV files (Vercel compatible)
 CACHE_DIR = "/tmp/nse_cache" if is_vercel() else "cache"
 METADATA_FILE = os.path.join(CACHE_DIR, "download_metadata.json")
@@ -50,13 +56,49 @@ METADATA_FILE = os.path.join(CACHE_DIR, "download_metadata.json")
 # In-memory cache for CSV data (fallback)
 _csv_cache = {}
 
-# Predefined NSE holidays
+# Predefined NSE holidays for 2026
 NSE_HOLIDAYS = {
-    datetime.date(2025, m, d) for (m, d) in [
-        (2, 26), (3, 14), (3, 31), (4, 10), (4, 14),
-        (4, 18), (5, 1), (8, 15), (8, 27), (10, 2),
-        (10, 21), (10, 22), (11, 5), (12, 25)
-    ]
+    # January 2026
+    datetime.date(2026, 1, 15),  # Municipal Corporation Election - Maharashtra
+    datetime.date(2026, 1, 26),  # Republic Day
+    
+    # February 2026
+    datetime.date(2026, 2, 19),  # Chhatrapati Shivaji Maharaj Jayanti
+    
+    # March 2026
+    datetime.date(2026, 3, 3),   # Holi
+    datetime.date(2026, 3, 19),  # Gudhi Padwa
+    datetime.date(2026, 3, 26),  # Ram Navami
+    datetime.date(2026, 3, 31),  # Mahavir Jayanti
+    
+    # April 2026
+    datetime.date(2026, 4, 1),   # Annual Bank Closing
+    datetime.date(2026, 4, 3),   # Good Friday
+    datetime.date(2026, 4, 14),  # Dr. Babasaheb Ambedkar Jayanti
+    
+    # May 2026
+    datetime.date(2026, 5, 1),   # Maharashtra Din / Buddha Pournima
+    datetime.date(2026, 5, 28),  # Bakri ID (Id-Uz-Zuha)
+    
+    # June 2026
+    datetime.date(2026, 6, 26),  # Muharram
+    
+    # August 2026
+    datetime.date(2026, 8, 26),  # Id-E-Milad
+    
+    # September 2026
+    datetime.date(2026, 9, 14),  # Ganesh Chaturthi
+    
+    # October 2026
+    datetime.date(2026, 10, 2),  # Mahatma Gandhi Jayanti
+    datetime.date(2026, 10, 20), # Dussehra
+    
+    # November 2026
+    datetime.date(2026, 11, 10), # Diwali (Bali Pratipada)
+    datetime.date(2026, 11, 24), # Guru Nanak Jayanti
+    
+    # December 2026
+    datetime.date(2026, 12, 25), # Christmas
 }
 
 # Thread pool for parallel downloads
@@ -104,6 +146,16 @@ def save_download_metadata(metadata: dict):
     except Exception as e:
         logging.warning(f"Failed to save metadata: {e}")
 
+def get_ist_time():
+    """Get current time in IST with fallback."""
+    if TIMEZONE_AVAILABLE and IST:
+        return datetime.datetime.now(IST)
+    else:
+        # Fallback: assume UTC+5:30 offset
+        utc_now = datetime.datetime.utcnow()
+        ist_offset = datetime.timedelta(hours=5, minutes=30)
+        return utc_now + ist_offset
+
 def is_download_needed(date: datetime.date) -> bool:
     """
     Check if download is needed for the given date.
@@ -112,7 +164,7 @@ def is_download_needed(date: datetime.date) -> bool:
     - Download only once per day
     - Skip if valid file already exists for today
     """
-    now_ist = datetime.datetime.now(IST)
+    now_ist = get_ist_time()
     target_date_str = get_date_string(date)
     
     # Check if it's after 7 PM IST
@@ -126,14 +178,16 @@ def is_download_needed(date: datetime.date) -> bool:
         # Check metadata for download timestamp
         metadata = load_download_metadata()
         if target_date_str in metadata:
-            download_time = datetime.datetime.fromisoformat(metadata[target_date_str]['timestamp'])
-            download_time_ist = download_time.replace(tzinfo=IST)
-            
-            # If downloaded today after 7 PM, skip
-            if (download_time_ist.date() == now_ist.date() and 
-                download_time_ist.hour >= 19):
-                logging.info(f"File already downloaded today after 7 PM for {target_date_str}")
-                return False
+            try:
+                download_time = datetime.datetime.fromisoformat(metadata[target_date_str]['timestamp'])
+                
+                # If downloaded today after 7 PM, skip
+                if (download_time.date() == now_ist.date() and 
+                    download_time.hour >= 19):
+                    logging.info(f"File already downloaded today after 7 PM for {target_date_str}")
+                    return False
+            except Exception as e:
+                logging.warning(f"Error parsing download timestamp: {e}")
     
     return True
 
@@ -186,7 +240,7 @@ def download_and_cache_csv(date: datetime.date, max_retries: int = 3) -> str:
                     # Update metadata
                     metadata = load_download_metadata()
                     metadata[date_str] = {
-                        'timestamp': datetime.datetime.now(IST).isoformat(),
+                        'timestamp': get_ist_time().isoformat(),
                         'file_size': len(content),
                         'status': 'success'
                     }
