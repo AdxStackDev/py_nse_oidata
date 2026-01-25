@@ -7,6 +7,8 @@ import datetime
 import requests
 import os
 import logging
+import json
+import pytz
 from concurrent.futures import ThreadPoolExecutor
 
 # ====================================================
@@ -23,19 +25,30 @@ logging.basicConfig(
 )
 
 # ====================================================
+# 🧩 Helper Functions
+# ====================================================
+
+# Helper function to detect Vercel environment
+def is_vercel():
+    """Check if running on Vercel."""
+    return os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV') is not None
+
+# ====================================================
 # 📁 Config
 # ====================================================
 BASE_URL = "https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_{}.csv"
 NSE_OPTION_CHAIN_URL = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
 NSE_HOME_URL = "https://www.nseindia.com"
 
-# In-memory cache for CSV data (Vercel-compatible)
-_csv_cache = {}
+# IST timezone
+IST = pytz.timezone('Asia/Kolkata')
 
-# Helper function to detect Vercel environment
-def is_vercel():
-    """Check if running on Vercel."""
-    return os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV') is not None
+# Cache directory for CSV files (Vercel compatible)
+CACHE_DIR = "/tmp/nse_cache" if is_vercel() else "cache"
+METADATA_FILE = os.path.join(CACHE_DIR, "download_metadata.json")
+
+# In-memory cache for CSV data (fallback)
+_csv_cache = {}
 
 # Predefined NSE holidays
 NSE_HOLIDAYS = {
@@ -52,6 +65,7 @@ executor = ThreadPoolExecutor(max_workers=5)
 # ====================================================
 # 🧩 Utility Functions
 # ====================================================
+
 def get_date_string(date: datetime.date) -> str:
     return date.strftime("%d%m%Y")
 
@@ -61,34 +75,209 @@ def adjust_for_holidays(date: datetime.date) -> datetime.date:
         date -= datetime.timedelta(days=1)
     return date
 
-def download_csv(date: datetime.date) -> str:
-    """Download NSE OI CSV file for a given date and cache in memory."""
-    date_str = get_date_string(date)
-    
-    # Check in-memory cache first
-    if date_str in _csv_cache:
-        return _csv_cache[date_str]
+def ensure_cache_dir():
+    """Ensure cache directory exists."""
+    if not os.path.exists(CACHE_DIR):
+        os.makedirs(CACHE_DIR, exist_ok=True)
 
+def get_cache_filename(date: datetime.date) -> str:
+    """Get cache filename for a specific date."""
+    date_str = get_date_string(date)
+    return os.path.join(CACHE_DIR, f"nse_fo_{date_str}.csv")
+
+def load_download_metadata() -> dict:
+    """Load download metadata from file."""
+    try:
+        if os.path.exists(METADATA_FILE):
+            with open(METADATA_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logging.warning(f"Failed to load metadata: {e}")
+    return {}
+
+def save_download_metadata(metadata: dict):
+    """Save download metadata to file."""
+    try:
+        ensure_cache_dir()
+        with open(METADATA_FILE, 'w') as f:
+            json.dump(metadata, f)
+    except Exception as e:
+        logging.warning(f"Failed to save metadata: {e}")
+
+def is_download_needed(date: datetime.date) -> bool:
+    """
+    Check if download is needed for the given date.
+    Rules:
+    - Download only after 7 PM IST
+    - Download only once per day
+    - Skip if valid file already exists for today
+    """
+    now_ist = datetime.datetime.now(IST)
+    target_date_str = get_date_string(date)
+    
+    # Check if it's after 7 PM IST
+    if now_ist.hour < 19:  # Before 7 PM
+        logging.info(f"Before 7 PM IST ({now_ist.hour}:00), skipping download")
+        return False
+    
+    # Check if file already exists
+    cache_file = get_cache_filename(date)
+    if os.path.exists(cache_file):
+        # Check metadata for download timestamp
+        metadata = load_download_metadata()
+        if target_date_str in metadata:
+            download_time = datetime.datetime.fromisoformat(metadata[target_date_str]['timestamp'])
+            download_time_ist = download_time.replace(tzinfo=IST)
+            
+            # If downloaded today after 7 PM, skip
+            if (download_time_ist.date() == now_ist.date() and 
+                download_time_ist.hour >= 19):
+                logging.info(f"File already downloaded today after 7 PM for {target_date_str}")
+                return False
+    
+    return True
+
+def download_and_cache_csv(date: datetime.date, max_retries: int = 3) -> str:
+    """
+    Download NSE OI CSV file and cache it with smart caching logic.
+    Returns the CSV content or None if failed.
+    """
+    date_str = get_date_string(date)
+    cache_file = get_cache_filename(date)
+    
+    # Check if download is needed
+    if not is_download_needed(date):
+        # Try to load from cache file
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    content = f.read()
+                logging.info(f"✅ Loaded cached data for {date_str}")
+                return content
+            except Exception as e:
+                logging.warning(f"Failed to read cache file: {e}")
+        
+        # Fallback to in-memory cache
+        if date_str in _csv_cache:
+            logging.info(f"✅ Loaded from memory cache for {date_str}")
+            return _csv_cache[date_str]
+    
+    # Download fresh data
     url = BASE_URL.format(date_str)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Referer": "https://www.nseindia.com"
     }
 
-    logging.info(f"Downloading CSV: {url}")
+    logging.info(f"📥 Downloading fresh CSV: {url}")
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.ok and response.text.strip():
+                content = response.text
+                
+                # Save to cache file
+                try:
+                    ensure_cache_dir()
+                    with open(cache_file, 'w') as f:
+                        f.write(content)
+                    
+                    # Update metadata
+                    metadata = load_download_metadata()
+                    metadata[date_str] = {
+                        'timestamp': datetime.datetime.now(IST).isoformat(),
+                        'file_size': len(content),
+                        'status': 'success'
+                    }
+                    save_download_metadata(metadata)
+                    
+                    logging.info(f"✅ Downloaded and cached data for {date_str}")
+                except Exception as e:
+                    logging.warning(f"Failed to save cache file: {e}")
+                
+                # Also store in memory cache as fallback
+                _csv_cache[date_str] = content
+                return content
+            else:
+                logging.warning(f"Download failed for {url}: {response.status_code}")
+                
+        except Exception as e:
+            logging.error(f"Download attempt {attempt + 1} failed for {url}: {e}")
+            
+        if attempt < max_retries - 1:
+            import time
+            time.sleep(2 ** attempt)  # Exponential backoff
+    
+    # If all attempts failed, try to load from cache as fallback
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                content = f.read()
+            logging.info(f"⚠️ Using stale cached data for {date_str}")
+            return content
+        except Exception as e:
+            logging.warning(f"Failed to read fallback cache: {e}")
+    
+    # Final fallback to memory cache
+    if date_str in _csv_cache:
+        logging.info(f"⚠️ Using stale memory cache for {date_str}")
+        return _csv_cache[date_str]
+    
+    logging.error(f"❌ All download attempts failed for {date_str}")
+    return None
+
+def cleanup_old_cache_files(days_to_keep: int = 7):
+    """Clean up cache files older than specified days."""
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.ok:
-            # Store in memory cache
-            _csv_cache[date_str] = response.text
-            logging.info(f"✅ Downloaded and cached data for {date_str}")
-            return response.text
-        else:
-            logging.warning(f"Failed to download {url}: {response.status_code}")
-            return None
+        if not os.path.exists(CACHE_DIR):
+            return
+            
+        cutoff_date = datetime.date.today() - datetime.timedelta(days=days_to_keep)
+        
+        for filename in os.listdir(CACHE_DIR):
+            if filename.startswith("nse_fo_") and filename.endswith(".csv"):
+                try:
+                    # Extract date from filename
+                    date_str = filename.replace("nse_fo_", "").replace(".csv", "")
+                    file_date = datetime.datetime.strptime(date_str, "%d%m%Y").date()
+                    
+                    if file_date < cutoff_date:
+                        file_path = os.path.join(CACHE_DIR, filename)
+                        os.remove(file_path)
+                        logging.info(f"🗑️ Cleaned up old cache file: {filename}")
+                        
+                except Exception as e:
+                    logging.warning(f"Failed to process cache file {filename}: {e}")
+                    
     except Exception as e:
-        logging.error(f"Error downloading {url}: {e}")
-        return None
+        logging.warning(f"Cache cleanup failed: {e}")
+
+def get_cache_status() -> dict:
+    """Get current cache status for debugging."""
+    try:
+        metadata = load_download_metadata()
+        cache_files = []
+        
+        if os.path.exists(CACHE_DIR):
+            for filename in os.listdir(CACHE_DIR):
+                if filename.startswith("nse_fo_") and filename.endswith(".csv"):
+                    file_path = os.path.join(CACHE_DIR, filename)
+                    stat = os.stat(file_path)
+                    cache_files.append({
+                        'filename': filename,
+                        'size': stat.st_size,
+                        'modified': datetime.datetime.fromtimestamp(stat.st_mtime).isoformat()
+                    })
+        
+        return {
+            'cache_dir': CACHE_DIR,
+            'metadata': metadata,
+            'cache_files': cache_files,
+            'memory_cache_keys': list(_csv_cache.keys())
+        }
+    except Exception as e:
+        return {'error': str(e)}
 
 
 
@@ -96,8 +285,8 @@ def download_csv(date: datetime.date) -> str:
 # 📊 Data Processing Functions
 # ====================================================
 def load_data(date: datetime.date) -> pd.DataFrame:
-    """Load OI data for a single date from memory cache."""
-    csv_content = download_csv(date)
+    """Load OI data for a single date using smart caching."""
+    csv_content = download_and_cache_csv(date)
     if not csv_content:
         return None
     
@@ -126,7 +315,11 @@ def load_data(date: datetime.date) -> pd.DataFrame:
         logging.error(f"Error reading CSV data: {e}")
         return None
     
-    return df.dropna()
+    # Remove TOTAL rows and clean data
+    df = df.dropna()
+    df = df[df["Client Type"] != "TOTAL"]  # Filter out TOTAL rows
+    
+    return df
 
 def fetch_last_n_days_data(end_date: datetime.date, n: int = 5) -> dict:
     """Fetch data for the last n trading days."""
@@ -411,12 +604,8 @@ def generate_advanced_charts(current_date: datetime.date):
     charts['step6_heat'] = fig_heat.to_html(include_plotlyjs='cdn', full_html=False)
 
     # --- Step 8: Requested Custom Tables & Charts ---
-    # Prepare Data with TOTAL row
+    # Use the data as-is (it already contains TOTAL rows from NSE data)
     step8_df = today_df.copy()
-    numeric_cols = step8_df.select_dtypes(include='number').columns
-    total_row = step8_df[numeric_cols].sum()
-    total_row["Client Type"] = "TOTAL"
-    step8_df = pd.concat([step8_df, pd.DataFrame([total_row])], ignore_index=True)
 
     # Helper for Color Formatting (Green/Red)
     def get_colors(values):
@@ -425,23 +614,23 @@ def generate_advanced_charts(current_date: datetime.date):
     # 1. Table: Call Diff vs Put Diff
     fig_tbl1 = go.Figure(data=[go.Table(
         header=dict(values=["Client Type", "Call Diff (Long-Short)", "Put Diff (Long-Short)"],
-                    fill_color='#d1d5db', align='center', font=dict(color='black', size=12)),
+                    fill_color='#d1d5db', align='center', font=dict(color='black', size=11)),
         cells=dict(values=[step8_df["Client Type"], step8_df["Call Diff"], step8_df["Put Diff"]],
                    fill_color=[['#f3f4f6']*len(step8_df), get_colors(step8_df["Call Diff"]), get_colors(step8_df["Put Diff"])],
-                   align='center', font=dict(color='black', size=11))
+                   align='center', font=dict(color='black', size=10), height=28)
     )])
-    fig_tbl1.update_layout(title="Call & Put Diff per Client", margin=dict(l=0, r=0, t=30, b=0))
+    fig_tbl1.update_layout(title="Call & Put Diff per Client", margin=dict(l=0, r=0, t=25, b=0), height=250)
     charts['step8_table1'] = fig_tbl1.to_html(include_plotlyjs='cdn', full_html=False)
 
     # 2. Table: Net Sentiment
     fig_tbl2 = go.Figure(data=[go.Table(
         header=dict(values=["Client Type", "Call-Put Diff (Call-Put)"],
-                    fill_color='#d1d5db', align='center', font=dict(color='black', size=12)),
+                    fill_color='#d1d5db', align='center', font=dict(color='black', size=11)),
         cells=dict(values=[step8_df["Client Type"], step8_df["Net Sentiment"]],
                    fill_color=[['#f3f4f6']*len(step8_df), get_colors(step8_df["Net Sentiment"])],
-                   align='center', font=dict(color='black', size=11))
+                   align='center', font=dict(color='black', size=10), height=28)
     )])
-    fig_tbl2.update_layout(title="Net Sentiment Diff", margin=dict(l=0, r=0, t=30, b=0))
+    fig_tbl2.update_layout(title="Net Sentiment Diff", margin=dict(l=0, r=0, t=25, b=0), height=250)
     charts['step8_table2'] = fig_tbl2.to_html(include_plotlyjs='cdn', full_html=False)
 
     # 3. Charts: Side-by-Side Diff Bars
@@ -494,6 +683,12 @@ def generate_advanced_charts(current_date: datetime.date):
 # ====================================================
 @app.route("/", methods=["GET", "POST"])
 def index():
+    # Initialize cache system and cleanup old files
+    try:
+        cleanup_old_cache_files(days_to_keep=7)
+    except Exception as e:
+        logging.warning(f"Cache cleanup failed: {e}")
+    
     # Simplified Index for Dashboard
     charts = None
     activity_data = None
@@ -510,6 +705,7 @@ def index():
         
     except Exception as e:
         logging.error(f"Index Auto-Load Error: {e}")
+        flash(f"Error loading market data: {str(e)}", "error")
     
     return render_template("index.html", charts=charts, activity_data=activity_data)
 
@@ -519,6 +715,15 @@ def index():
 def option_chain_view():
     flash("Option Chain feature is temporarily unavailable due to NSE API restrictions.", "info")
     return redirect(url_for("index"))
+
+@app.route("/cache-status")
+def cache_status():
+    """Debug route to check cache status."""
+    if not app.debug and not is_vercel():
+        return "Cache status only available in debug mode", 403
+    
+    status = get_cache_status()
+    return f"<pre>{json.dumps(status, indent=2)}</pre>"
 
 # ====================================================
 # 🚀 Run App

@@ -12,8 +12,8 @@
             <div class="flex items-center justify-between">
                 <div>
                     <h1 class="text-4xl font-bold mb-2">NSE F&O Analytics</h1>
-                    <p class="text-xl text-blue-100 mb-4">Real-time Futures & Options Market Intelligence</p>
-                    <div class="flex items-center space-x-6 text-sm">
+                    <!-- <p class="text-xl text-blue-100 mb-4">Futures & Options Analysis</p> -->
+                    <!-- <div class="flex items-center space-x-6 text-sm">
                         <div class="flex items-center space-x-2">
                             <div class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
                             <span>Live Data</span>
@@ -30,7 +30,7 @@
                             </svg>
                             <span>Advanced Analytics</span>
                         </div>
-                    </div>
+                    </div> -->
                 </div>
                 <div class="hidden md:block">
                     <div class="w-32 h-32 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center">
@@ -146,75 +146,6 @@
     </div>
     {% endif %}
 
-    <!-- Quick Actions Section -->
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <!-- Option Chain Card -->
-        <div class="group bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl p-6 shadow-xl border border-white/20 dark:border-gray-700/50 hover-lift transition-all duration-300 hover:shadow-2xl">
-            <div class="flex items-center justify-between mb-4">
-                <div class="w-12 h-12 rounded-xl bg-gradient-to-r from-orange-500 to-red-500 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
-                    </svg>
-                </div>
-                <div class="px-3 py-1 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 text-xs font-medium">
-                    Beta
-                </div>
-            </div>
-            <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-2">Live Option Chain</h3>
-            <p class="text-gray-600 dark:text-gray-400 text-sm mb-4">Real-time NIFTY option chain with OI analysis and ATM strike identification.</p>
-            <a href="{{ url_for('option_chain_view') }}" class="inline-flex items-center text-orange-600 dark:text-orange-400 font-medium text-sm group-hover:text-orange-700 dark:group-hover:text-orange-300 transition-colors">
-                View Chain
-                <svg class="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                </svg>
-            </a>
-        </div>
-
-        <!-- Market Analysis Card -->
-        <div class="group bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl p-6 shadow-xl border border-white/20 dark:border-gray-700/50 hover-lift transition-all duration-300 hover:shadow-2xl">
-            <div class="flex items-center justify-between mb-4">
-                <div class="w-12 h-12 rounded-xl bg-gradient-to-r from-blue-500 to-cyan-500 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-                    </svg>
-                </div>
-                <div class="px-3 py-1 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-xs font-medium">
-                    Live
-                </div>
-            </div>
-            <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-2">Market Analysis</h3>
-            <p class="text-gray-600 dark:text-gray-400 text-sm mb-4">Comprehensive F&O analysis with sentiment tracking and institutional flow monitoring.</p>
-            <button class="inline-flex items-center text-blue-600 dark:text-blue-400 font-medium text-sm group-hover:text-blue-700 dark:group-hover:text-blue-300 transition-colors">
-                View Analysis
-                <svg class="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                </svg>
-            </button>
-        </div>
-
-        <!-- Data Export Card -->
-        <div class="group bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl p-6 shadow-xl border border-white/20 dark:border-gray-700/50 hover-lift transition-all duration-300 hover:shadow-2xl">
-            <div class="flex items-center justify-between mb-4">
-                <div class="w-12 h-12 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                    </svg>
-                </div>
-                <div class="px-3 py-1 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-xs font-medium">
-                    Export
-                </div>
-            </div>
-            <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-2">Data Export</h3>
-            <p class="text-gray-600 dark:text-gray-400 text-sm mb-4">Export market data and analysis reports in multiple formats for further analysis.</p>
-            <button class="inline-flex items-center text-purple-600 dark:text-purple-400 font-medium text-sm group-hover:text-purple-700 dark:group-hover:text-purple-300 transition-colors">
-                Export Data
-                <svg class="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                </svg>
-            </button>
-        </div>
-    </div>
-
     {% if charts %}
     <!-- Market Snapshot Section -->
     <div class="space-y-6">
@@ -233,23 +164,23 @@
         </div>
 
         <!-- Analysis Tables -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
             <div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 overflow-hidden hover-lift chart-container">
-                <div class="p-6 border-b border-gray-200 dark:border-gray-700">
+                <div class="p-4 border-b border-gray-200 dark:border-gray-700">
                     <h3 class="text-lg font-bold text-gray-900 dark:text-white">Call & Put Difference Analysis</h3>
                     <p class="text-sm text-gray-600 dark:text-gray-400">Net position analysis by participant</p>
                 </div>
-                <div class="p-4">
+                <div class="p-2">
                     {{ charts['step8_table1'] | safe }}
                 </div>
             </div>
             
             <div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 overflow-hidden hover-lift chart-container">
-                <div class="p-6 border-b border-gray-200 dark:border-gray-700">
+                <div class="p-4 border-b border-gray-200 dark:border-gray-700">
                     <h3 class="text-lg font-bold text-gray-900 dark:text-white">Net Sentiment Analysis</h3>
                     <p class="text-sm text-gray-600 dark:text-gray-400">Overall market sentiment indicators</p>
                 </div>
-                <div class="p-4">
+                <div class="p-2">
                     {{ charts['step8_table2'] | safe }}
                 </div>
             </div>
@@ -257,22 +188,22 @@
 
         <!-- Interactive Charts -->
         <div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 overflow-hidden hover-lift chart-container">
-            <div class="p-6 border-b border-gray-200 dark:border-gray-700">
+            <div class="p-4 border-b border-gray-200 dark:border-gray-700">
                 <h3 class="text-lg font-bold text-gray-900 dark:text-white">Participant Activity Comparison</h3>
                 <p class="text-sm text-gray-600 dark:text-gray-400">Side-by-side analysis of call and put differences</p>
             </div>
-            <div class="p-4">
+            <div class="p-2">
                 {{ charts['step8_charts'] | safe }}
             </div>
         </div>
 
         <!-- Position Intensity Heatmap -->
         <div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 overflow-hidden hover-lift chart-container">
-            <div class="p-6 border-b border-gray-200 dark:border-gray-700">
+            <div class="p-4 border-b border-gray-200 dark:border-gray-700">
                 <h3 class="text-lg font-bold text-gray-900 dark:text-white">Position Intensity Heatmap</h3>
                 <p class="text-sm text-gray-600 dark:text-gray-400">Visual representation of market positioning across participants and instruments</p>
             </div>
-            <div class="p-4">
+            <div class="p-2">
                 {{ charts['position_heat'] | safe }}
             </div>
         </div>
