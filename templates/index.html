@@ -1,130 +1,336 @@
 {% extends "base.html" %}
 
-{% block title %}Dashboard - NSE Analytics{% endblock %}
+{% block title %}Dashboard - NSE F&O Analytics{% endblock %}
 
 {% block content %}
-<div class="max-w-4xl mx-auto">
-    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
-        <div class="p-6 border-b border-gray-200 dark:border-gray-700">
-            <h2 class="text-2xl font-bold text-gray-800 dark:text-white">Market Dashboard</h2>
-            <p class="text-gray-600 dark:text-gray-400 mt-1">Analyze Open Interest data for Nifty & BankNifty</p>
-        </div>
-
-        <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
-
-            {% if activity_data %}
-            <!-- FII DII Activity Table -->
-            <div
-                class="md:col-span-2 bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700 overflow-hidden mb-6">
-                <div class="bg-black text-white text-center py-2 font-bold text-lg uppercase">
-                    {{ activity_data.date }} - FII DII FNO ACTIVITY
+<div class="space-y-8 animate-fade-in">
+    <!-- Hero Section -->
+    <div class="relative overflow-hidden rounded-3xl bg-gradient-to-r from-primary-600 via-purple-600 to-indigo-600 p-8 text-white shadow-2xl">
+        <div class="absolute inset-0 bg-black/20"></div>
+        <div class="absolute inset-0 bg-gradient-to-r from-primary-600/90 to-purple-600/90"></div>
+        <div class="relative z-10">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-4xl font-bold mb-2">NSE F&O Analytics</h1>
+                    <p class="text-xl text-blue-100 mb-4">Real-time Futures & Options Market Intelligence</p>
+                    <div class="flex items-center space-x-6 text-sm">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
+                            <span>Live Data</span>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+                            </svg>
+                            <span>SEBI Compliant</span>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M12.395 2.553a1 1 0 00-1.45-.385c-.345.23-.614.558-.822.88-.214.33-.403.713-.57 1.116-.334.804-.614 1.768-.84 2.734a31.365 31.365 0 00-.613 3.58 2.64 2.64 0 01-.945-1.067c-.328-.68-.398-1.534-.398-2.654A1 1 0 005.05 6.05 6.981 6.981 0 003 11a7 7 0 1011.95-4.95c-.592-.591-.98-.985-1.348-1.467-.363-.476-.724-1.063-1.207-2.03zM12.12 15.12A3 3 0 017 13s.879.5 2.5.5c0-1 .5-4 1.25-4.5.5 1 .786 1.293 1.371 1.879A2.99 2.99 0 0113 13a2.99 2.99 0 01-.879 2.121z" clip-rule="evenodd"/>
+                            </svg>
+                            <span>Advanced Analytics</span>
+                        </div>
+                    </div>
                 </div>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-sm text-left">
-                        <thead
-                            class="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400 border-b dark:border-gray-600">
-                            <tr>
-                                <th class="px-4 py-2 border-r dark:border-gray-600">Participant</th>
-                                <th class="px-4 py-2 border-r dark:border-gray-600">Instrument</th>
-                                <th class="px-4 py-2 border-r dark:border-gray-600 text-right">Change</th>
-                                <th class="px-4 py-2 border-r dark:border-gray-600">Activity</th>
-                                <th class="px-4 py-2">Trend</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for participant in activity_data.data %}
-                            {% for row in participant.rows %}
-                            <tr class="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600">
-                                {% if loop.first %}
-                                <td rowspan="3"
-                                    class="px-4 py-2 font-bold text-gray-900 dark:text-white border-r dark:border-gray-600 bg-gray-50 dark:bg-gray-800 text-center align-middle">
-                                    {{ participant.name }}
-                                </td>
-                                {% endif %}
-                                <td class="px-4 py-2 border-r dark:border-gray-600 font-medium">{{ row.instrument }}
-                                </td>
-                                <td class="px-4 py-2 border-r dark:border-gray-600 text-right font-mono">{{ row.change
-                                    }}</td>
-                                <td
-                                    class="px-4 py-2 border-r dark:border-gray-600 
-                                        {% if row.color == 'green' %}bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200{% else %}bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200{% endif %}">
-                                    {{ row.activity }}
-                                </td>
-                                <td class="px-4 py-2 font-bold text-white 
-                                        {% if row.color == 'green' %}bg-green-500{% else %}bg-red-500{% endif %}">
-                                    {{ row.trend }}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                            {% endfor %}
-                        </tbody>
-                        <tfoot>
-                            <tr>
-                                <td colspan="4" class="px-4 py-3 font-bold text-right text-white bg-black">OVERALL
-                                    TREND:</td>
-                                <td
-                                    class="px-4 py-3 font-bold text-center text-white uppercase
-                                    {% if activity_data.overall_color == 'green' %}bg-green-600{% elif activity_data.overall_color == 'red' %}bg-red-600{% else %}bg-gray-600{% endif %}">
-                                    {{ activity_data.overall_trend }}
-                                </td>
-                            </tr>
-                        </tfoot>
-                    </table>
-                </div>
-            </div>
-            {% endif %}
-
-            <!-- Quick Links Card -->
-            <div
-                class="md:col-span-2 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-6 border border-gray-200 dark:border-gray-600">
-                <h3 class="text-lg font-semibold text-gray-800 dark:text-white mb-4 flex items-center">
-                    <svg class="w-5 h-5 mr-2 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                    </svg>
-                    Quick Actions
-                </h3>
-                <div class="space-y-3">
-                    <a href="{{ url_for('option_chain_view') }}"
-                        class="block w-full text-center bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 font-medium py-2 px-4 rounded-md border border-gray-300 dark:border-gray-600 transition-colors">
-                        Live Option Chain
-                    </a>
+                <div class="hidden md:block">
+                    <div class="w-32 h-32 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center">
+                        <svg class="w-16 h-16 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                        </svg>
+                    </div>
                 </div>
             </div>
         </div>
+        <!-- Decorative elements -->
+        <div class="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-32 translate-x-32"></div>
+        <div class="absolute bottom-0 left-0 w-48 h-48 bg-white/5 rounded-full translate-y-24 -translate-x-24"></div>
     </div>
-    {% if charts %}
-    <!-- Step 8: Latest Market Snapshot (Auto-Loaded) -->
-    <div class="mt-8">
-        <div class="flex items-center mb-4">
-            <span
-                class="bg-green-100 text-green-800 text-xs font-semibold mr-2 px-2.5 py-0.5 rounded dark:bg-green-200 dark:text-green-900">Latest</span>
-            <h3 class="text-2xl font-bold text-gray-800 dark:text-white">Market Snapshot</h3>
-        </div>
 
-        <!-- Tables Row -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-            <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-                {{ charts['step8_table1'] | safe }}
+    {% if activity_data %}
+    <!-- FII DII Activity Section -->
+    <div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/20 dark:border-gray-700/50 overflow-hidden hover-lift">
+        <div class="bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 text-white p-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-2xl font-bold mb-1">FII DII F&O Activity</h2>
+                    <p class="text-gray-300">{{ activity_data.date }} - Institutional Trading Analysis</p>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <div class="px-4 py-2 rounded-full bg-gradient-to-r {% if activity_data.overall_color == 'green' %}from-success-500 to-emerald-500{% elif activity_data.overall_color == 'red' %}from-danger-500 to-red-500{% else %}from-gray-500 to-slate-500{% endif %} text-white font-bold text-sm">
+                        {{ activity_data.overall_trend }}
+                    </div>
+                    <div class="w-3 h-3 rounded-full {% if activity_data.overall_color == 'green' %}bg-success-400 animate-pulse{% elif activity_data.overall_color == 'red' %}bg-danger-400 animate-pulse{% else %}bg-gray-400{% endif %}"></div>
+                </div>
             </div>
-            <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-                {{ charts['step8_table2'] | safe }}
-            </div>
         </div>
-
-        <!-- Charts Row -->
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4 mb-6">
-            {{ charts['step8_charts'] | safe }}
-        </div>
-
-        <!-- Position Intensity Heatmap -->
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-            {{ charts['position_heat'] | safe }}
+        
+        <div class="overflow-x-auto">
+            <table class="w-full data-table">
+                <thead class="bg-gradient-to-r from-gray-50 to-blue-50 dark:from-dark-700 dark:to-dark-600">
+                    <tr>
+                        <th class="px-6 py-4 text-left text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider border-r border-gray-200 dark:border-gray-600">
+                            Participant
+                        </th>
+                        <th class="px-6 py-4 text-left text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider border-r border-gray-200 dark:border-gray-600">
+                            Instrument
+                        </th>
+                        <th class="px-6 py-4 text-right text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider border-r border-gray-200 dark:border-gray-600">
+                            Net Change
+                        </th>
+                        <th class="px-6 py-4 text-left text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider border-r border-gray-200 dark:border-gray-600">
+                            Activity
+                        </th>
+                        <th class="px-6 py-4 text-center text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">
+                            Market Sentiment
+                        </th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
+                    {% for participant in activity_data.data %}
+                    {% for row in participant.rows %}
+                    <tr class="hover:bg-gray-50/50 dark:hover:bg-dark-700/50 transition-colors duration-200">
+                        {% if loop.first %}
+                        <td rowspan="3" class="px-6 py-4 border-r border-gray-200 dark:border-gray-600 bg-gradient-to-r from-gray-50 to-transparent dark:from-dark-800 dark:to-transparent">
+                            <div class="flex items-center">
+                                <div class="w-10 h-10 rounded-xl bg-gradient-to-r from-primary-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm mr-3">
+                                    {{ participant.name[:2] }}
+                                </div>
+                                <div>
+                                    <div class="text-sm font-bold text-gray-900 dark:text-white">{{ participant.name }}</div>
+                                    <div class="text-xs text-gray-500 dark:text-gray-400">Institutional</div>
+                                </div>
+                            </div>
+                        </td>
+                        {% endif %}
+                        <td class="px-6 py-4 border-r border-gray-200 dark:border-gray-600">
+                            <div class="flex items-center">
+                                <div class="w-8 h-8 rounded-lg {% if row.instrument == 'Future' %}bg-blue-100 dark:bg-blue-900/30{% elif row.instrument == 'CE' %}bg-green-100 dark:bg-green-900/30{% else %}bg-red-100 dark:bg-red-900/30{% endif %} flex items-center justify-center mr-3">
+                                    <span class="text-xs font-bold {% if row.instrument == 'Future' %}text-blue-600 dark:text-blue-400{% elif row.instrument == 'CE' %}text-green-600 dark:text-green-400{% else %}text-red-600 dark:text-red-400{% endif %}">
+                                        {{ row.instrument }}
+                                    </span>
+                                </div>
+                                <span class="text-sm font-medium text-gray-900 dark:text-white">{{ row.instrument }}</span>
+                            </div>
+                        </td>
+                        <td class="px-6 py-4 text-right border-r border-gray-200 dark:border-gray-600">
+                            <span class="text-sm font-mono font-bold {% if row.color == 'green' %}text-success-600 dark:text-success-400{% else %}text-danger-600 dark:text-danger-400{% endif %}">
+                                {{ row.change }}
+                            </span>
+                        </td>
+                        <td class="px-6 py-4 border-r border-gray-200 dark:border-gray-600">
+                            <div class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium {% if row.color == 'green' %}bg-success-100 text-success-800 dark:bg-success-900/30 dark:text-success-300{% else %}bg-danger-100 text-danger-800 dark:bg-danger-900/30 dark:text-danger-300{% endif %}">
+                                <div class="w-2 h-2 rounded-full {% if row.color == 'green' %}bg-success-500{% else %}bg-danger-500{% endif %} mr-2"></div>
+                                {{ row.activity }}
+                            </div>
+                        </td>
+                        <td class="px-6 py-4 text-center">
+                            <div class="inline-flex items-center px-4 py-2 rounded-xl font-bold text-sm text-white shadow-lg {% if row.color == 'green' %}bg-gradient-to-r from-success-500 to-emerald-500 shadow-success-500/25{% else %}bg-gradient-to-r from-danger-500 to-red-500 shadow-danger-500/25{% endif %}">
+                                {% if row.color == 'green' %}
+                                <svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M5.293 9.707a1 1 0 010-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L11 7.414V15a1 1 0 11-2 0V7.414L6.707 9.707a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
+                                </svg>
+                                {% else %}
+                                <svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M14.707 10.293a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L9 12.586V5a1 1 0 012 0v7.586l2.293-2.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+                                </svg>
+                                {% endif %}
+                                {{ row.trend }}
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
     </div>
     {% endif %}
 
-    <!-- Disclaimer -->
+    <!-- Quick Actions Section -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- Option Chain Card -->
+        <div class="group bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl p-6 shadow-xl border border-white/20 dark:border-gray-700/50 hover-lift transition-all duration-300 hover:shadow-2xl">
+            <div class="flex items-center justify-between mb-4">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-r from-orange-500 to-red-500 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+                    </svg>
+                </div>
+                <div class="px-3 py-1 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 text-xs font-medium">
+                    Beta
+                </div>
+            </div>
+            <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-2">Live Option Chain</h3>
+            <p class="text-gray-600 dark:text-gray-400 text-sm mb-4">Real-time NIFTY option chain with OI analysis and ATM strike identification.</p>
+            <a href="{{ url_for('option_chain_view') }}" class="inline-flex items-center text-orange-600 dark:text-orange-400 font-medium text-sm group-hover:text-orange-700 dark:group-hover:text-orange-300 transition-colors">
+                View Chain
+                <svg class="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+            </a>
+        </div>
+
+        <!-- Market Analysis Card -->
+        <div class="group bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl p-6 shadow-xl border border-white/20 dark:border-gray-700/50 hover-lift transition-all duration-300 hover:shadow-2xl">
+            <div class="flex items-center justify-between mb-4">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-r from-blue-500 to-cyan-500 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                    </svg>
+                </div>
+                <div class="px-3 py-1 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-xs font-medium">
+                    Live
+                </div>
+            </div>
+            <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-2">Market Analysis</h3>
+            <p class="text-gray-600 dark:text-gray-400 text-sm mb-4">Comprehensive F&O analysis with sentiment tracking and institutional flow monitoring.</p>
+            <button class="inline-flex items-center text-blue-600 dark:text-blue-400 font-medium text-sm group-hover:text-blue-700 dark:group-hover:text-blue-300 transition-colors">
+                View Analysis
+                <svg class="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Data Export Card -->
+        <div class="group bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl p-6 shadow-xl border border-white/20 dark:border-gray-700/50 hover-lift transition-all duration-300 hover:shadow-2xl">
+            <div class="flex items-center justify-between mb-4">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                </div>
+                <div class="px-3 py-1 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-xs font-medium">
+                    Export
+                </div>
+            </div>
+            <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-2">Data Export</h3>
+            <p class="text-gray-600 dark:text-gray-400 text-sm mb-4">Export market data and analysis reports in multiple formats for further analysis.</p>
+            <button class="inline-flex items-center text-purple-600 dark:text-purple-400 font-medium text-sm group-hover:text-purple-700 dark:group-hover:text-purple-300 transition-colors">
+                Export Data
+                <svg class="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    {% if charts %}
+    <!-- Market Snapshot Section -->
+    <div class="space-y-6">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <div class="w-1 h-8 bg-gradient-to-b from-primary-500 to-purple-600 rounded-full"></div>
+                <div>
+                    <h2 class="text-3xl font-bold text-gray-900 dark:text-white">Market Snapshot</h2>
+                    <p class="text-gray-600 dark:text-gray-400">Latest F&O market analysis and insights</p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-2 px-4 py-2 rounded-full bg-success-100 dark:bg-success-900/30 text-success-700 dark:text-success-300">
+                <div class="w-2 h-2 rounded-full bg-success-500 animate-pulse"></div>
+                <span class="text-sm font-medium">Live Data</span>
+            </div>
+        </div>
+
+        <!-- Analysis Tables -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 overflow-hidden hover-lift chart-container">
+                <div class="p-6 border-b border-gray-200 dark:border-gray-700">
+                    <h3 class="text-lg font-bold text-gray-900 dark:text-white">Call & Put Difference Analysis</h3>
+                    <p class="text-sm text-gray-600 dark:text-gray-400">Net position analysis by participant</p>
+                </div>
+                <div class="p-4">
+                    {{ charts['step8_table1'] | safe }}
+                </div>
+            </div>
+            
+            <div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 overflow-hidden hover-lift chart-container">
+                <div class="p-6 border-b border-gray-200 dark:border-gray-700">
+                    <h3 class="text-lg font-bold text-gray-900 dark:text-white">Net Sentiment Analysis</h3>
+                    <p class="text-sm text-gray-600 dark:text-gray-400">Overall market sentiment indicators</p>
+                </div>
+                <div class="p-4">
+                    {{ charts['step8_table2'] | safe }}
+                </div>
+            </div>
+        </div>
+
+        <!-- Interactive Charts -->
+        <div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 overflow-hidden hover-lift chart-container">
+            <div class="p-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-bold text-gray-900 dark:text-white">Participant Activity Comparison</h3>
+                <p class="text-sm text-gray-600 dark:text-gray-400">Side-by-side analysis of call and put differences</p>
+            </div>
+            <div class="p-4">
+                {{ charts['step8_charts'] | safe }}
+            </div>
+        </div>
+
+        <!-- Position Intensity Heatmap -->
+        <div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 overflow-hidden hover-lift chart-container">
+            <div class="p-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-bold text-gray-900 dark:text-white">Position Intensity Heatmap</h3>
+                <p class="text-sm text-gray-600 dark:text-gray-400">Visual representation of market positioning across participants and instruments</p>
+            </div>
+            <div class="p-4">
+                {{ charts['position_heat'] | safe }}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Enhanced Disclaimer -->
     {% include 'disclaimer.html' %}
 </div>
+
+<!-- Custom JavaScript for enhanced interactions -->
+<script>
+    // Add smooth hover effects to cards
+    document.querySelectorAll('.hover-lift').forEach(card => {
+        card.addEventListener('mouseenter', function() {
+            this.style.transform = 'translateY(-8px) scale(1.02)';
+        });
+        
+        card.addEventListener('mouseleave', function() {
+            this.style.transform = 'translateY(0) scale(1)';
+        });
+    });
+
+    // Add loading states to buttons
+    document.querySelectorAll('button, a').forEach(element => {
+        element.addEventListener('click', function(e) {
+            if (this.href && !this.href.includes('#')) {
+                const originalText = this.innerHTML;
+                this.innerHTML = '<svg class="animate-spin -ml-1 mr-3 h-4 w-4 text-current inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>Loading...';
+                
+                setTimeout(() => {
+                    this.innerHTML = originalText;
+                }, 2000);
+            }
+        });
+    });
+
+    // Add intersection observer for animations
+    const observerOptions = {
+        threshold: 0.1,
+        rootMargin: '0px 0px -50px 0px'
+    };
+
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.style.opacity = '1';
+                entry.target.style.transform = 'translateY(0)';
+            }
+        });
+    }, observerOptions);
+
+    // Observe all animated elements
+    document.querySelectorAll('.hover-lift, .chart-container').forEach(el => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateY(20px)';
+        el.style.transition = 'all 0.6s ease-out';
+        observer.observe(el);
+    });
+</script>
 {% endblock %}
