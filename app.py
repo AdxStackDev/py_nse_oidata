@@ -728,11 +728,6 @@ def generate_advanced_charts(current_date: datetime.date):
     return charts
 
 # ====================================================
-# ⛓️ Option Chain Logic
-# ====================================================
-
-
-# ====================================================
 # 🌍 Flask Routes
 # ====================================================
 @app.route("/", methods=["GET", "POST"])
@@ -762,13 +757,6 @@ def index():
         flash(f"Error loading market data: {str(e)}", "error")
     
     return render_template("index.html", charts=charts, activity_data=activity_data)
-
-
-
-@app.route("/option-chain")
-def option_chain_view():
-    flash("Option Chain feature is temporarily unavailable due to NSE API restrictions.", "info")
-    return redirect(url_for("index"))
 
 @app.route("/cache-status")
 def cache_status():

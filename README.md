@@ -31,9 +31,8 @@
 
 ### 🎯 Key Features
 
-- **FII/DII Activity Tracker**: Real-time tracking of institutional flows.
+- **FII/DII Activity Tracker**: Tracking of institutional flows.
 - **Sentiment Analysis**: Automated Bullish/Bearish/Neutral classification.
-- **Live Option Chain**: Real-time OI tracking with ATM identification.
 - **Heatmaps**: Visual position intensity indicators.
 - **Smart Caching**: In-memory data management for speed.
 
@@ -54,9 +53,6 @@
 
 ### 🖥️ Main Dashboard
 <img src="assets/dashboard.png" width="800" alt="Dashboard" style="border-radius: 10px; margin-bottom: 20px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);">
-
-### 🔗 Option Chain Analysis
-<img src="assets/option_chain.png" width="800" alt="Option Chain" style="border-radius: 10px; margin-bottom: 20px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);">
 
 ### 📊 Call vs Put Difference
 <img src="assets/call_put_difference_graph.png" width="800" alt="Call Put Difference" style="border-radius: 10px; margin-bottom: 20px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);">
