@@ -1165,6 +1165,7 @@ def index():
         option_chain=option_chain,
         selected_date=date_param or "",
         current_year=datetime.date.today().year,
+        current_month=datetime.date.today().strftime("%B"),
     )
 
 
