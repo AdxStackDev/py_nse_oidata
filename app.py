@@ -1,1247 +1,1003 @@
-from flask import Flask, render_template, request, flash, jsonify
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import pandas as pd
-import datetime
-import requests
-import os
+"""
+NSE F&O Participant Analytics - Vercel-ready Flask app.
+
+Design rules that keep this deployable on Vercel's Python runtime:
+  * Only two third-party packages (flask, requests). No pandas / numpy / plotly /
+    pytz, which are what usually blow the 250 MB function-size limit.
+  * The filesystem is read-only except /tmp, so downloaded files are cached in
+    /tmp. Optional history shipped inside the project (./data/fao_ddmmyyyy.csv)
+    is read first, so those days never need the network.
+  * No sessions / flash messages, so responses carry no Set-Cookie and can be
+    cached at Vercel's edge (Cache-Control: s-maxage).
+  * Slow, frequently-blocked NSE *live* endpoints are NOT called while rendering
+    the page. The browser fetches /api/live afterwards.
+  * Charts are drawn in the browser (Chart.js) from a JSON payload.
+
+How the participant numbers are calculated (all from NSE's participant-wise OI file)
+------------------------------------------------------------------------------------
+  Net position       = Long - Short                         (per instrument)
+  Call Diff          = Index Call Long - Index Call Short
+  Put Diff           = Index Put Long  - Index Put Short
+  Bullish option OI  = Call Long + Put Short                (profits if market rises)
+  Bearish option OI  = Call Short + Put Long                (profits if market falls)
+  Options Net        = Bullish - Bearish = Call Diff - Put Diff
+  Futures Bias %     = (Fut Long - Fut Short) / (Fut Long + Fut Short) * 100
+  Options Bias %     = Options Net / (Bullish + Bearish) * 100
+  Blended Bias %     = simple average of Futures Bias % and Options Bias %
+  Contribution %     = participant's Long (or Short) OI / market Long (or Short) OI
+  Net contribution % = participant's Net / market one-side OI  (sums to 0 across
+                       participants, because every long has a matching short)
+"""
+
+from __future__ import annotations
+
+import csv
 import logging
-import json
+import os
+import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta, timezone
 
-try:
-    import pytz
+import requests
+from flask import Flask, jsonify, render_template, request
 
-    IST = pytz.timezone("Asia/Kolkata")
-    TIMEZONE_AVAILABLE = True
-except ImportError:
-    logging.warning("pytz not available, using basic timezone handling")
-    IST = None
-    TIMEZONE_AVAILABLE = False
-
-# ====================================================
-# Flask App Setup
-# ====================================================
-app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "super_secret_key_123")
-
-
-# Custom Jinja2 filter: format a date with strftime
-@app.template_filter("strftime")
-def jinja_strftime(fmt):
-    """Usage: '{{ "%Y-%m-%d" | strftime }}' returns today's date formatted."""
-    return datetime.date.today().strftime(fmt)
-
-
-# Configure logging (StreamHandler only for Vercel compatibility)
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] - %(message)s",
-    handlers=[logging.StreamHandler()],
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
+log = logging.getLogger("nse-dashboard")
 
-# ====================================================
-# Helper Functions
-# ====================================================
+app = Flask(__name__)
 
+# ------------------------------------------------------------------ config ---
+# Set True to bring back the live option chain (PCR, max pain, support/resistance).
+# Everything for it is kept in place and simply switched off.
+ENABLE_OPTION_CHAIN = False
 
-def is_vercel():
-    """Check if running on Vercel."""
-    return os.getenv("VERCEL") == "1" or os.getenv("VERCEL_ENV") is not None
+# India has no daylight saving, so a fixed +05:30 offset is exact (no pytz needed).
+IST = timezone(timedelta(hours=5, minutes=30))
 
+IS_VERCEL = bool(os.getenv("VERCEL"))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")  # read-only history bundled with the app
 
-# ====================================================
-# Config
-# ====================================================
-BASE_URL = "https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_{}.csv"
-NSE_OPTION_CHAIN_URL = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+PARTICIPANT_OI_URL = (
+    "https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_{}.csv"
+)
 NSE_HOME_URL = "https://www.nseindia.com"
-NSE_QUOTE_URL = "https://www.nseindia.com/api/quote-equity?symbol=NIFTY+50"
 NSE_INDICES_URL = "https://www.nseindia.com/api/allIndices"
+NSE_OPTION_CHAIN_URL = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
 
-# Cache directory for CSV files (Vercel compatible)
-CACHE_DIR = "/tmp/nse_cache" if is_vercel() else "cache"
-METADATA_FILE = os.path.join(CACHE_DIR, "download_metadata.json")
-
-# In-memory cache for CSV data (fallback)
-_csv_cache = {}
-
-# In-memory cache for Nifty spot / option chain (short-lived)
-_live_cache = {}
-LIVE_CACHE_TTL = 300  # 5 minutes
-
-# Predefined NSE holidays for 2026
-NSE_HOLIDAYS = {
-    datetime.date(2026, 1, 15),
-    datetime.date(2026, 1, 26),
-    datetime.date(2026, 2, 19),
-    datetime.date(2026, 3, 3),
-    datetime.date(2026, 3, 19),
-    datetime.date(2026, 3, 26),
-    datetime.date(2026, 3, 31),
-    datetime.date(2026, 4, 1),
-    datetime.date(2026, 4, 3),
-    datetime.date(2026, 4, 14),
-    datetime.date(2026, 5, 1),
-    datetime.date(2026, 5, 28),
-    datetime.date(2026, 6, 26),
-    datetime.date(2026, 8, 26),
-    datetime.date(2026, 9, 14),
-    datetime.date(2026, 10, 2),
-    datetime.date(2026, 10, 20),
-    datetime.date(2026, 11, 10),
-    datetime.date(2026, 11, 24),
-    datetime.date(2026, 12, 25),
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/csv, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nseindia.com/",
 }
 
-executor = ThreadPoolExecutor(max_workers=5)
+HTTP_TIMEOUT = 6
+MISS_TTL = 120
+LIVE_TTL = 300
+LIVE_FAIL_TTL = 60
+TREND_DAYS = 5
+SIGNAL_THRESHOLD = (
+    10.0  # blended bias % beyond which a participant is Bullish / Bearish
+)
+ROUNDING_TOLERANCE = 3  # NSE rounds each cell, so sums can be off by 1-2 contracts
 
-# ====================================================
-# Utility Functions
-# ====================================================
+# (client key in the NSE file, label shown in the UI)
+PARTICIPANTS = [("FII", "FII"), ("Pro", "PRO"), ("DII", "DII"), ("Client", "RETAIL")]
+LABELS = [label for _, label in PARTICIPANTS]
 
-
-def get_date_string(date: datetime.date) -> str:
-    return date.strftime("%d%m%Y")
-
-
-def adjust_for_holidays(date: datetime.date) -> datetime.date:
-    """Ensure date is not weekend or NSE holiday."""
-    while date.weekday() > 4 or date in NSE_HOLIDAYS:
-        date -= datetime.timedelta(days=1)
-    return date
-
-
-def ensure_cache_dir():
-    if not os.path.exists(CACHE_DIR):
-        os.makedirs(CACHE_DIR, exist_ok=True)
-
-
-def get_cache_filename(date: datetime.date) -> str:
-    date_str = get_date_string(date)
-    return os.path.join(CACHE_DIR, f"nse_fo_{date_str}.csv")
-
-
-def load_download_metadata() -> dict:
-    try:
-        if os.path.exists(METADATA_FILE):
-            with open(METADATA_FILE, "r") as f:
-                return json.load(f)
-    except Exception as e:
-        logging.warning(f"Failed to load metadata: {e}")
-    return {}
-
-
-def save_download_metadata(metadata: dict):
-    try:
-        ensure_cache_dir()
-        with open(METADATA_FILE, "w") as f:
-            json.dump(metadata, f)
-    except Exception as e:
-        logging.warning(f"Failed to save metadata: {e}")
+NSE_HOLIDAYS = {
+    date(2026, 1, 15),
+    date(2026, 1, 26),
+    date(2026, 2, 19),
+    date(2026, 3, 3),
+    date(2026, 3, 19),
+    date(2026, 3, 26),
+    date(2026, 3, 31),
+    date(2026, 4, 1),
+    date(2026, 4, 3),
+    date(2026, 4, 14),
+    date(2026, 5, 1),
+    date(2026, 5, 28),
+    date(2026, 6, 26),
+    date(2026, 8, 26),
+    date(2026, 9, 14),
+    date(2026, 10, 2),
+    date(2026, 10, 20),
+    date(2026, 11, 10),
+    date(2026, 11, 24),
+    date(2026, 12, 25),
+}
 
 
-def get_ist_time():
-    """Get current time in IST with fallback."""
-    if TIMEZONE_AVAILABLE and IST:
-        return datetime.datetime.now(IST)
-    else:
-        utc_now = datetime.datetime.utcnow()
-        ist_offset = datetime.timedelta(hours=5, minutes=30)
-        return utc_now + ist_offset
-
-
-def is_market_open() -> bool:
-    """Check if NSE market is currently open."""
-    now = get_ist_time()
-    if now.weekday() > 4:
-        return False
-    if now.date() in NSE_HOLIDAYS:
-        return False
-    t = now.hour * 60 + now.minute
-    return (9 * 60 + 15) <= t <= (15 * 60 + 30)
-
-
-def is_download_needed(date: datetime.date) -> bool:
-    now_ist = get_ist_time()
-    target_date_str = get_date_string(date)
-    if now_ist.hour < 19:
-        return False
-    cache_file = get_cache_filename(date)
-    if os.path.exists(cache_file):
-        metadata = load_download_metadata()
-        if target_date_str in metadata:
-            try:
-                download_time = datetime.datetime.fromisoformat(
-                    metadata[target_date_str]["timestamp"]
-                )
-                if download_time.date() == now_ist.date() and download_time.hour >= 19:
-                    return False
-            except Exception:
-                pass
-    return True
-
-
-def download_and_cache_csv(date: datetime.date, max_retries: int = 3) -> str:
-    date_str = get_date_string(date)
-    cache_file = get_cache_filename(date)
-
-    if not is_download_needed(date):
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, "r") as f:
-                    return f.read()
-            except Exception:
-                pass
-        if date_str in _csv_cache:
-            return _csv_cache[date_str]
-
-    url = BASE_URL.format(date_str)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Referer": "https://www.nseindia.com",
-    }
-
-    for attempt in range(max_retries):
+# ------------------------------------------------------------------- cache ---
+def _init_cache_dir() -> str | None:
+    candidates = ["/tmp/nse_cache"] if IS_VERCEL else [os.path.join(BASE_DIR, "cache")]
+    candidates.append(os.path.join(tempfile.gettempdir(), "nse_cache"))
+    for path in candidates:
         try:
-            response = requests.get(url, headers=headers, timeout=15)
-            if response.ok and response.text.strip():
-                content = response.text
-                try:
-                    ensure_cache_dir()
-                    with open(cache_file, "w") as f:
-                        f.write(content)
-                    metadata = load_download_metadata()
-                    metadata[date_str] = {
-                        "timestamp": get_ist_time().isoformat(),
-                        "file_size": len(content),
-                        "status": "success",
-                    }
-                    save_download_metadata(metadata)
-                except Exception:
-                    pass
-                _csv_cache[date_str] = content
-                return content
-        except Exception as e:
-            logging.error(f"Download attempt {attempt + 1} failed for {url}: {e}")
-        if attempt < max_retries - 1:
-            import time
-
-            time.sleep(2**attempt)
-
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file, "r") as f:
-                return f.read()
-        except Exception:
-            pass
-    if date_str in _csv_cache:
-        return _csv_cache[date_str]
+            os.makedirs(path, exist_ok=True)
+            return path
+        except OSError:
+            continue
     return None
 
 
-def cleanup_old_cache_files(days_to_keep: int = 7):
+CACHE_DIR = _init_cache_dir()
+_csv_mem: dict[str, dict] = {}
+_misses: dict[str, float] = {}
+_live: dict[str, tuple[float, dict]] = {}
+_live_fail: dict[str, float] = {}
+
+
+def now_ist() -> datetime:
+    return datetime.now(IST)
+
+
+def is_trading_day(d: date) -> bool:
+    return d.weekday() < 5 and d not in NSE_HOLIDAYS
+
+
+# ------------------------------------------------- participant OI (CSV) data ---
+def _to_int(value: str) -> int:
     try:
-        if not os.path.exists(CACHE_DIR):
-            return
-        cutoff_date = datetime.date.today() - datetime.timedelta(days=days_to_keep)
-        for filename in os.listdir(CACHE_DIR):
-            if filename.startswith("nse_fo_") and filename.endswith(".csv"):
-                try:
-                    date_str = filename.replace("nse_fo_", "").replace(".csv", "")
-                    file_date = datetime.datetime.strptime(date_str, "%d%m%Y").date()
-                    if file_date < cutoff_date:
-                        os.remove(os.path.join(CACHE_DIR, filename))
-                except Exception:
-                    pass
-    except Exception:
-        pass
+        return int(float(str(value).replace(",", "").strip() or 0))
+    except ValueError:
+        return 0
 
 
-# ====================================================
-# Live Market Data (Nifty Spot + Option Chain)
-# ====================================================
-
-
-def _nse_session_headers():
-    """Return headers with a fresh NSE session cookie."""
-    s = requests.Session()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nseindia.com/",
-    }
-    try:
-        s.get(NSE_HOME_URL, headers=headers, timeout=8)
-    except Exception:
-        pass
-    return s, headers
-
-
-def get_nifty_spot() -> dict:
+def parse_participant_csv(text: str) -> dict | None:
     """
-    Fetch Nifty 50 spot price from NSE indices API.
-    Returns dict with price, change, pct_change or None on failure.
-    Cached for LIVE_CACHE_TTL seconds.
+    Parse NSE's participant-wise OI file into {client: {column: int}}.
+
+    Real files have quirks this handles: a quoted title row (written with doubled
+    quotes), header names padded with spaces, and CRLF or even CR-CR-LF endings.
+    The TOTAL row is kept under the key "TOTAL" so the data can be cross-checked.
     """
-    cache_key = "nifty_spot"
-    now_ts = datetime.datetime.utcnow().timestamp()
-
-    if cache_key in _live_cache:
-        entry = _live_cache[cache_key]
-        if now_ts - entry["ts"] < LIVE_CACHE_TTL:
-            return entry["data"]
-
-    try:
-        s, headers = _nse_session_headers()
-        resp = s.get(NSE_INDICES_URL, headers=headers, timeout=8)
-        if resp.ok:
-            data = resp.json()
-            for item in data.get("data", []):
-                if item.get("index") == "NIFTY 50":
-                    result = {
-                        "price": item.get("last", 0),
-                        "change": item.get("variation", 0),
-                        "pct_change": item.get("percentChange", 0),
-                    }
-                    _live_cache[cache_key] = {"ts": now_ts, "data": result}
-                    return result
-    except Exception as e:
-        logging.warning(f"Nifty spot fetch failed: {e}")
-    return None
-
-
-def get_option_chain_summary() -> dict:
-    """
-    Fetch Nifty option chain and return:
-      - pcr: Put-Call Ratio
-      - max_pain: strike with min total pain
-      - top_ce: list of top 5 CE OI strikes (resistance)
-      - top_pe: list of top 5 PE OI strikes (support)
-    Cached for LIVE_CACHE_TTL seconds.
-    """
-    cache_key = "option_chain"
-    now_ts = datetime.datetime.utcnow().timestamp()
-
-    if cache_key in _live_cache:
-        entry = _live_cache[cache_key]
-        if now_ts - entry["ts"] < LIVE_CACHE_TTL:
-            return entry["data"]
-
-    try:
-        s, headers = _nse_session_headers()
-        resp = s.get(NSE_OPTION_CHAIN_URL, headers=headers, timeout=10)
-        if not resp.ok:
-            return None
-
-        raw = resp.json()
-        records = raw.get("records", {}).get("data", [])
-        if not records:
-            return None
-
-        # Spot price from API
-        spot = raw.get("records", {}).get("underlyingValue", 0)
-
-        # Only consider strikes within ±10% of spot
-        lower = spot * 0.90
-        upper = spot * 1.10
-
-        ce_oi = {}
-        pe_oi = {}
-        total_ce_oi = 0
-        total_pe_oi = 0
-
-        for rec in records:
-            strike = rec.get("strikePrice", 0)
-            if not (lower <= strike <= upper):
-                continue
-            if "CE" in rec:
-                oi = rec["CE"].get("openInterest", 0)
-                ce_oi[strike] = oi
-                total_ce_oi += oi
-            if "PE" in rec:
-                oi = rec["PE"].get("openInterest", 0)
-                pe_oi[strike] = oi
-                total_pe_oi += oi
-
-        pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0
-
-        # Top 5 CE strikes by OI (resistance)
-        top_ce = sorted(ce_oi.items(), key=lambda x: x[1], reverse=True)[:5]
-        # Top 5 PE strikes by OI (support)
-        top_pe = sorted(pe_oi.items(), key=lambda x: x[1], reverse=True)[:5]
-
-        # Max Pain: strike where total pain of all option writers is minimum
-        all_strikes = sorted(set(list(ce_oi.keys()) + list(pe_oi.keys())))
-        max_pain_strike = None
-        min_pain = float("inf")
-        for s_price in all_strikes:
-            pain = 0
-            for k, oi in ce_oi.items():
-                pain += max(0, s_price - k) * oi
-            for k, oi in pe_oi.items():
-                pain += max(0, k - s_price) * oi
-            if pain < min_pain:
-                min_pain = pain
-                max_pain_strike = s_price
-
-        result = {
-            "pcr": pcr,
-            "pcr_signal": "Oversold/Bullish"
-            if pcr >= 1.2
-            else ("Overbought/Bearish" if pcr <= 0.8 else "Neutral"),
-            "pcr_color": "green" if pcr >= 1.2 else ("red" if pcr <= 0.8 else "gray"),
-            "max_pain": max_pain_strike,
-            "spot": spot,
-            "top_ce": [{"strike": s, "oi": f"{o:,.0f}"} for s, o in top_ce],
-            "top_pe": [{"strike": s, "oi": f"{o:,.0f}"} for s, o in top_pe],
-            "total_ce_oi": total_ce_oi,
-            "total_pe_oi": total_pe_oi,
+    lines = [ln for ln in text.lstrip("﻿").replace("\r", "\n").split("\n") if ln.strip()]
+    rows = list(csv.reader(lines))
+    header_idx = next(
+        (i for i, r in enumerate(rows) if r and r[0].strip().lower() == "client type"),
+        None,
+    )
+    if header_idx is None:
+        return None
+    header = [h.strip() for h in rows[header_idx]]
+    out: dict[str, dict[str, int]] = {}
+    for r in rows[header_idx + 1 :]:
+        if not r or not r[0].strip():
+            continue
+        name = r[0].strip()
+        out["TOTAL" if name.upper() == "TOTAL" else name] = {
+            h: _to_int(v) for h, v in zip(header[1:], r[1:])
         }
-        _live_cache[cache_key] = {"ts": now_ts, "data": result}
-        return result
+    if not all(key in out for key, _ in PARTICIPANTS):
+        return None
+    return out
 
-    except Exception as e:
-        logging.warning(f"Option chain fetch failed: {e}")
+
+def integrity_ok(rec: dict) -> bool | None:
+    """True when participants add up to NSE's TOTAL row and every long has a matching short."""
+    tot = rec.get("TOTAL")
+    if not tot:
+        return None
+    for col, value in tot.items():
+        if (
+            abs(sum(rec[k].get(col, 0) for k, _ in PARTICIPANTS) - value)
+            > ROUNDING_TOLERANCE
+        ):
+            return False
+    pairs = [
+        ("Future Index Long", "Future Index Short"),
+        ("Option Index Call Long", "Option Index Call Short"),
+        ("Option Index Put Long", "Option Index Put Short"),
+    ]
+    return all(
+        abs(tot.get(a, 0) - tot.get(b, 0)) <= ROUNDING_TOLERANCE for a, b in pairs
+    )
+
+
+def _read_file(directory: str | None, key: str) -> str | None:
+    if not directory:
+        return None
+    try:
+        with open(
+            os.path.join(directory, f"fao_{key}.csv"), encoding="utf-8", newline=""
+        ) as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _write_disk(key: str, text: str) -> None:
+    if not CACHE_DIR:
+        return
+    try:
+        with open(
+            os.path.join(CACHE_DIR, f"fao_{key}.csv"), "w", encoding="utf-8", newline=""
+        ) as fh:
+            fh.write(text)
+    except OSError:
+        pass
+
+
+def _download(key: str) -> str | None:
+    url = PARTICIPANT_OI_URL.format(key)
+    for attempt in range(2):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=HTTP_TIMEOUT)
+            if resp.status_code == 200 and "client type" in resp.text[:600].lower():
+                return resp.text
+            return None
+        except requests.RequestException as exc:
+            log.warning(
+                "CSV download attempt %d failed for %s: %s", attempt + 1, key, exc
+            )
     return None
 
 
-# ====================================================
-# Data Processing Functions
-# ====================================================
-
-
-def load_data(date: datetime.date) -> pd.DataFrame:
-    csv_content = download_and_cache_csv(date)
-    if not csv_content:
+def fetch_participant_oi(d: date) -> dict | None:
+    """Memory -> bundled ./data -> /tmp cache -> NSE, with a short negative cache."""
+    key = d.strftime("%d%m%Y")
+    if key in _csv_mem:
+        return _csv_mem[key]
+    if time.time() - _misses.get(key, 0) < MISS_TTL:
         return None
+    text = _read_file(DATA_DIR, key) or _read_file(CACHE_DIR, key)
+    if text is None:
+        text = _download(key)
+        if text:
+            _write_disk(key, text)
+    parsed = parse_participant_csv(text) if text else None
+    if parsed:
+        _csv_mem[key] = parsed
+    else:
+        _misses[key] = time.time()
+    return parsed
 
-    from io import StringIO
 
-    base_cols = [
-        "Client Type",
-        "Future Index Long",
-        "Future Index Short",
-        "Option Index Call Long",
-        "Option Index Put Long",
-        "Option Index Call Short",
-        "Option Index Put Short",
+def load_sessions(anchor: date, n: int = TREND_DAYS) -> list[tuple[date, dict]]:
+    """Newest-first list of up to n (date, data) sessions ending at/before `anchor`."""
+    anchor = min(anchor, now_ist().date())
+    candidates: list[date] = []
+    d = anchor
+    while len(candidates) < n + 3 and (anchor - d).days < 30:
+        if is_trading_day(d):
+            candidates.append(d)
+        d -= timedelta(days=1)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(fetch_participant_oi, candidates))
+    return [(d, r) for d, r in zip(candidates, results) if r][:n]
+
+
+# -------------------------------------------------------------- analytics ---
+def _g(rec: dict, key: str) -> int:
+    return rec.get(key, 0)
+
+
+def net(rec: dict, long_key: str, short_key: str) -> int:
+    return _g(rec, long_key) - _g(rec, short_key)
+
+
+def pct(part: float, whole: float) -> float:
+    """Percentage rounded to 1 dp; 0.0 when the denominator is zero."""
+    return round(part / whole * 100, 1) if whole else 0.0
+
+
+def fmt_signed(n: int) -> str:
+    return f"{n:+,}"
+
+
+def fmt_pct(v: float) -> str:
+    return f"{v:+.1f}%"
+
+
+def _tone(n: float) -> str:
+    return "green" if n > 0 else "red" if n < 0 else "gray"
+
+
+def signal_for(score: float) -> tuple[str, str]:
+    if score >= SIGNAL_THRESHOLD:
+        return "Bullish", "green"
+    if score <= -SIGNAL_THRESHOLD:
+        return "Bearish", "red"
+    return "Neutral", "gray"
+
+
+def metrics(rec: dict) -> dict:
+    """Every per-participant number the dashboard needs, derived from one CSV row."""
+    fl, fs = _g(rec, "Future Index Long"), _g(rec, "Future Index Short")
+    cl, cs = _g(rec, "Option Index Call Long"), _g(rec, "Option Index Call Short")
+    pl, ps = _g(rec, "Option Index Put Long"), _g(rec, "Option Index Put Short")
+    tl, ts = _g(rec, "Total Long Contracts"), _g(rec, "Total Short Contracts")
+
+    bull, bear = cl + ps, cs + pl  # direction-aware option exposure
+    fut_bias = pct(fl - fs, fl + fs)
+    opt_bias = pct(bull - bear, bull + bear)
+    blended = round((fut_bias + opt_bias) / 2, 1)
+    label, color = signal_for(blended)
+    return {
+        "fut_long": fl,
+        "fut_short": fs,
+        "fut_net": fl - fs,
+        "fut_long_pct": pct(fl, fl + fs),
+        "fut_bias": fut_bias,
+        "call_long": cl,
+        "call_short": cs,
+        "call_net": cl - cs,
+        "put_long": pl,
+        "put_short": ps,
+        "put_net": pl - ps,
+        "bull": bull,
+        "bear": bear,
+        "opt_net": bull - bear,
+        "opt_bull_pct": pct(bull, bull + bear),
+        "opt_bias": opt_bias,
+        "book_long_pct": pct(tl, tl + ts),
+        "blended": blended,
+        "signal": label,
+        "signal_color": color,
+    }
+
+
+def contribution(cur: dict, long_col: str, short_col: str) -> dict:
+    """Each participant's share of the market's long OI, short OI and net position."""
+    tot_l = sum(_g(cur[k], long_col) for k, _ in PARTICIPANTS)
+    tot_s = sum(_g(cur[k], short_col) for k, _ in PARTICIPANTS)
+    return {
+        "long_pct": [pct(_g(cur[k], long_col), tot_l) for k, _ in PARTICIPANTS],
+        "short_pct": [pct(_g(cur[k], short_col), tot_s) for k, _ in PARTICIPANTS],
+        "net_pct": [
+            pct(net(cur[k], long_col, short_col), tot_l) for k, _ in PARTICIPANTS
+        ],
+        "total": tot_l,
+    }
+
+
+def build_activity(curr: dict, prev: dict) -> dict:
+    """Day-over-day change in net Futures / CE / PE for every participant."""
+    instruments = [
+        ("Future", "Future Index Long", "Future Index Short"),
+        ("CE", "Option Index Call Long", "Option Index Call Short"),
+        ("PE", "Option Index Put Long", "Option Index Put Short"),
     ]
-    extra_cols = [
-        "Future Stock Long",
-        "Future Stock Short",
-        "Option Stock Call Long",
-        "Option Stock Put Long",
-        "Option Stock Call Short",
-        "Option Stock Put Short",
-        "Total Long Contracts",
-        "Total Short Contracts",
-    ]
+    rules = {
+        "Future": ("Bought Futures", "Bullish", "Sold Futures", "Bearish", 2),
+        "CE": ("Bought Calls", "Bullish", "Sold Calls", "Bearish", 1),
+        "PE": ("Bought Puts", "Bearish", "Sold Puts", "Bullish", 1),
+    }
+    colors = {"Bullish": "green", "Bearish": "red"}
 
-    try:
-        # Read all columns first so we can strip whitespace from headers
-        df = pd.read_csv(StringIO(csv_content), skiprows=1)
-        df.columns = df.columns.str.strip()  # ← fix trailing-space column names
-        df["Client Type"] = df["Client Type"].str.strip()
-
-        # Keep only the columns we need; fill any missing extra cols with 0
-        keep = base_cols + extra_cols
-        for col in extra_cols:
-            if col not in df.columns:
-                df[col] = 0
-
-        df = df[[c for c in keep if c in df.columns]]
-
-        # Coerce all numeric columns (handles any stray commas / whitespace)
-        for col in keep[1:]:
-            if col in df.columns:
-                df[col] = (
-                    pd.to_numeric(
-                        df[col].astype(str).str.replace(",", "").str.strip(),
-                        errors="coerce",
-                    )
-                    .fillna(0)
-                    .astype(int)
-                )
-
-        df = df[df["Client Type"] != "TOTAL"].reset_index(drop=True)
-        df = df.dropna(subset=base_cols[1:])  # drop rows where core cols are NaN
-        return df
-
-    except Exception as e:
-        logging.error(f"Error reading CSV data: {e}")
-        return None
-
-
-def fetch_last_n_days_data(end_date: datetime.date, n: int = 5) -> dict:
-    data_map = {}
-    current_date = end_date
-    count = 0
-    while count < n:
-        current_date = adjust_for_holidays(current_date)
-        df = load_data(current_date)
-        if df is not None:
-            data_map[current_date] = df
-            count += 1
-        current_date -= datetime.timedelta(days=1)
-    return data_map
-
-
-def calculate_net_sentiment(df):
-    df["Call Diff"] = df["Option Index Call Long"] - df["Option Index Call Short"]
-    df["Put Diff"] = df["Option Index Put Long"] - df["Option Index Put Short"]
-    # Net Sentiment = Call Diff + Put Diff
-    # Positive = net long bias (Bullish), Negative = net short bias (Bearish)
-    df["Net Sentiment"] = df["Call Diff"] + df["Put Diff"]
-    return df
-
-
-# ====================================================
-# Activity Table Logic
-# ====================================================
-
-
-def get_latest_activity_data(target_date: datetime.date = None):
-    """
-    Returns activity data dict. target_date defaults to latest available.
-    Also includes participant summary cards and divergence alert.
-    """
-    curr_date = target_date or datetime.date.today()
-    attempts = 0
-    curr_df = None
-
-    while attempts < 10:
-        curr_date = adjust_for_holidays(curr_date)
-        curr_df = load_data(curr_date)
-        if curr_df is not None and not curr_df.empty:
-            break
-        curr_date -= datetime.timedelta(days=1)
-        attempts += 1
-
-    if curr_df is None:
-        return None
-
-    prev_date = curr_date - datetime.timedelta(days=1)
-    prev_df = None
-    attempts = 0
-    while attempts < 10:
-        prev_date = adjust_for_holidays(prev_date)
-        prev_df = load_data(prev_date)
-        if prev_df is not None and not prev_df.empty:
-            break
-        prev_date -= datetime.timedelta(days=1)
-        attempts += 1
-
-    if prev_df is None:
-        return None
-
-    def get_net(df, client, type_long, type_short):
-        row = df[df["Client Type"] == client]
-        if row.empty:
-            return 0
-        return int(row[type_long].values[0] - row[type_short].values[0])
-
-    participants = ["FII", "Pro", "DII", "Client"]
-    display_names = {"FII": "FII", "Pro": "PRO", "DII": "DII", "Client": "RETAIL"}
-
-    results = []
-    overall_score = 0
-    summary_cards = []  # net futures position per participant
-
-    for p in participants:
-        p_data = {"name": display_names[p], "rows": []}
-
-        instruments = [
-            ("Future", "Future Index Long", "Future Index Short"),
-            ("CE", "Option Index Call Long", "Option Index Call Short"),
-            ("PE", "Option Index Put Long", "Option Index Put Short"),
-        ]
-
-        net_future_change = None
-
-        for instr_name, col_long, col_short in instruments:
-            net_curr = get_net(curr_df, p, col_long, col_short)
-            net_prev = get_net(prev_df, p, col_long, col_short)
-            change = net_curr - net_prev
-
-            activity = trend = trend_color = ""
-
-            if instr_name == "Future":
-                net_future_change = change
-                if change > 0:
-                    activity, trend, trend_color = "Bought Futures", "Bullish", "green"
-                    if p == "FII":
-                        overall_score += 2
-                elif change < 0:
-                    activity, trend, trend_color = "Sold Futures", "Bearish", "red"
-                    if p == "FII":
-                        overall_score -= 2
-                else:
-                    activity, trend, trend_color = "No Change", "Neutral", "gray"
-            elif instr_name == "CE":
-                if change > 0:
-                    activity, trend, trend_color = "Bought Calls", "Bullish", "green"
-                    if p == "FII":
-                        overall_score += 1
-                elif change < 0:
-                    activity, trend, trend_color = "Sold Calls", "Bearish", "red"
-                    if p == "FII":
-                        overall_score -= 1
-                else:
-                    activity, trend, trend_color = "No Change", "Neutral", "gray"
-            elif instr_name == "PE":
-                if change > 0:
-                    activity, trend, trend_color = "Bought Puts", "Bearish", "red"
-                    if p == "FII":
-                        overall_score -= 1
-                elif change < 0:
-                    activity, trend, trend_color = "Sold Puts", "Bullish", "green"
-                    if p == "FII":
-                        overall_score += 1
-                else:
-                    activity, trend, trend_color = "No Change", "Neutral", "gray"
-
-            p_data["rows"].append(
+    table, cards, score = [], [], 0
+    for key, label in PARTICIPANTS:
+        rows, fut_change = [], 0
+        for name, lk, sk in instruments:
+            change = net(curr[key], lk, sk) - net(prev[key], lk, sk)
+            up_act, up_tr, dn_act, dn_tr, weight = rules[name]
+            if change > 0:
+                activity, trend = up_act, up_tr
+            elif change < 0:
+                activity, trend = dn_act, dn_tr
+            else:
+                activity, trend = "No change", "Neutral"
+            color = colors.get(trend, "gray")
+            if key == "FII" and color != "gray":
+                score += weight if color == "green" else -weight
+            if name == "Future":
+                fut_change = change
+            rows.append(
                 {
-                    "instrument": instr_name,
-                    "change": f"{change:,.0f}",
-                    "change_raw": change,
+                    "instrument": name,
+                    "change": fmt_signed(change),
                     "activity": activity,
                     "trend": trend,
-                    "color": trend_color,
+                    "color": color,
                 }
             )
-
-        results.append(p_data)
-
-        # Summary card
-        summary_cards.append(
+        table.append({"name": label, "rows": rows})
+        cards.append(
             {
-                "name": display_names[p],
-                "net_futures": f"{net_future_change:+,.0f}"
-                if net_future_change is not None
-                else "—",
-                "color": "green" if (net_future_change or 0) > 0 else "red",
+                "name": label,
+                "net_futures": fmt_signed(fut_change),
+                "color": _tone(fut_change),
             }
         )
 
-    # FII/DII divergence detection
-    fii_future = next((c for c in summary_cards if c["name"] == "FII"), None)
-    dii_future = next((c for c in summary_cards if c["name"] == "DII"), None)
+    fii = next(c for c in cards if c["name"] == "FII")
+    dii = next(c for c in cards if c["name"] == "DII")
     divergence = None
-    if fii_future and dii_future and fii_future["color"] != dii_future["color"]:
+    if {fii["color"], dii["color"]} == {"green", "red"}:
         divergence = {
-            "fii_color": fii_future["color"],
-            "dii_color": dii_future["color"],
-            "fii_net": fii_future["net_futures"],
-            "dii_net": dii_future["net_futures"],
+            "fii_net": fii["net_futures"],
+            "dii_net": dii["net_futures"],
+            "fii_color": fii["color"],
+            "dii_color": dii["color"],
         }
 
-    overall_trend = "NEUTRAL"
-    overall_color = "gray"
-    if overall_score >= 2:
-        overall_trend, overall_color = "BULLISH", "green"
-    elif overall_score <= -2:
-        overall_trend, overall_color = "BEARISH", "red"
-
-    # Build 5-day trend table
-    trend_table = build_5day_trend(curr_date)
-
+    if score >= 2:
+        trend, color = "BULLISH", "green"
+    elif score <= -2:
+        trend, color = "BEARISH", "red"
+    else:
+        trend, color = "NEUTRAL", "gray"
     return {
-        "date": curr_date.strftime("%d/%m/%Y"),
-        "data_date": curr_date.strftime("%Y-%m-%d"),  # for date picker
-        "data": results,
-        "overall_trend": overall_trend,
-        "overall_color": overall_color,
-        "summary_cards": summary_cards,
+        "data": table,
+        "summary_cards": cards,
         "divergence": divergence,
-        "trend_table": trend_table,
+        "overall_trend": trend,
+        "overall_color": color,
+        "score": score,
     }
 
 
-# ====================================================
-# 5-Day Trend Table
-# ====================================================
+# ------------------------------------------------------ OI Changes tab ---
+# (display name, long column, short column, is_put)
+# For puts the colours are directional: adding long puts is bearish (red), adding short puts is bullish (green).
+OI_INSTRUMENTS = [
+    ("Index Futures", "Future Index Long", "Future Index Short", False),
+    ("Index Calls", "Option Index Call Long", "Option Index Call Short", False),
+    ("Index Puts", "Option Index Put Long", "Option Index Put Short", True),
+    ("Stock Futures", "Future Stock Long", "Future Stock Short", False),
+    ("Stock Calls", "Option Stock Call Long", "Option Stock Call Short", False),
+    ("Stock Puts", "Option Stock Put Long", "Option Stock Put Short", True),
+]
 
 
-def build_5day_trend(end_date: datetime.date) -> list:
+def inr(n: int, signed: bool = False) -> str:
+    """Indian digit grouping (12,34,567), the way traders here read open interest."""
+    sign = "-" if n < 0 else ("+" if signed and n > 0 else "")
+    s = str(abs(n))
+    if len(s) > 3:
+        head, tail, parts = s[:-3], s[-3:], []
+        while len(head) > 2:
+            parts.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            parts.insert(0, head)
+        s = ",".join(parts + [tail])
+    return sign + s
+
+
+def _dir_tone(value: int, bullish_when_positive: bool) -> str:
+    if value == 0:
+        return "gray"
+    return "green" if (value > 0) == bullish_when_positive else "red"
+
+
+def build_oi_changes(sessions: list[tuple[date, dict]]) -> dict:
     """
-    Returns list of dicts: date, FII, PRO, DII, RETAIL net sentiment per day.
+    Per instrument and participant: change in longs, change in shorts, net buy/sell today,
+    and the net position carried today / 1 session ago / 2 sessions ago.
     """
-    data_map = fetch_last_n_days_data(end_date, n=5)
-    sorted_dates = sorted(data_map.keys())
-    rows = []
-    for d in sorted_dates:
-        df = calculate_net_sentiment(data_map[d].copy())
-        row = {"date": d.strftime("%d %b")}
-        for client, label in [
-            ("FII", "FII"),
-            ("Pro", "PRO"),
-            ("DII", "DII"),
-            ("Client", "RETAIL"),
-        ]:
-            r = df[df["Client Type"] == client]
-            val = int(r["Net Sentiment"].values[0]) if not r.empty else 0
-            row[label] = {
-                "value": f"{val:+,.0f}",
-                "color": "green" if val >= 0 else "red",
+    cur, prev = sessions[0][1], sessions[1][1]
+    history = [s[1] for s in sessions[:3]]  # today, prev, prev-2
+    col_dates = [s[0].strftime("%d %b") for s in sessions[:3]]
+
+    blocks = []
+    for name, lcol, scol, is_put in OI_INSTRUMENTS:
+        # Colour logic: bullish_when_positive is flipped for puts.
+        long_bull, short_bull = (not is_put), is_put
+        rows, tot_net, tot_pos = [], 0, [0, 0, 0]
+        for key, label in PARTICIPANTS:
+            d_long = _g(cur[key], lcol) - _g(prev[key], lcol)
+            d_short = _g(cur[key], scol) - _g(prev[key], scol)
+            d_net = d_long - d_short
+            tot_net += d_net
+            pos = []
+            for i in range(3):
+                if i < len(history):
+                    v = net(history[i][key], lcol, scol)
+                    tot_pos[i] += v
+                    pos.append({"t": inr(v), "c": _dir_tone(v, long_bull)})
+                else:
+                    pos.append({"t": "—", "c": "gray"})
+            rows.append(
+                {
+                    "name": label,
+                    "long": {
+                        "label": "Added Longs"
+                        if d_long > 0
+                        else "Closed Longs"
+                        if d_long < 0
+                        else "No change",
+                        "t": inr(d_long),
+                        "c": _dir_tone(d_long, long_bull),
+                    },
+                    "short": {
+                        "label": "Added Shorts"
+                        if d_short > 0
+                        else "Closed Shorts"
+                        if d_short < 0
+                        else "No change",
+                        "t": inr(d_short),
+                        "c": _dir_tone(d_short, short_bull),
+                    },
+                    "net": {
+                        "label": "Bought Net"
+                        if d_net > 0
+                        else "Sold Net"
+                        if d_net < 0
+                        else "No change",
+                        "t": inr(d_net),
+                        "c": _dir_tone(d_net, long_bull),
+                    },
+                    "pos": pos,
+                }
+            )
+        blocks.append(
+            {
+                "name": name,
+                "rows": rows,
+                "total_net": inr(tot_net) if tot_net else "–",
+                "total_pos": [inr(v) if v else "–" for v in tot_pos],
             }
-        rows.append(row)
-    return rows
-
-
-# ====================================================
-# Chart Generation
-# ====================================================
-
-
-def generate_advanced_charts(current_date: datetime.date):
-    data_map = fetch_last_n_days_data(current_date, n=5)
-    sorted_dates = sorted(data_map.keys())
-
-    if len(sorted_dates) < 1:
-        raise Exception("Not enough data available.")
-
-    today_df = data_map[sorted_dates[-1]].copy()
-    today_df = calculate_net_sentiment(today_df)
-    prev_df = data_map[sorted_dates[-2]].copy() if len(sorted_dates) >= 2 else today_df
-
-    layout_args = dict(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#888",
-        margin=dict(l=20, r=20, t=40, b=20),
-    )
-
-    charts = {}
-
-    def get_colors(values):
-        return ["#86efac" if v >= 0 else "#fca5a5" for v in values]
-
-    # ── CHART 1: Long/Short Ratio per Participant ─────────────────────────────
-    # Uses Total Long Contracts / Total Short Contracts
-    ls_df = today_df.copy()
-    ls_df["LS_Ratio"] = ls_df["Total Long Contracts"] / ls_df[
-        "Total Short Contracts"
-    ].replace(0, 1)
-    bar_colors = ["#059669" if v >= 1 else "#dc2626" for v in ls_df["LS_Ratio"]]
-
-    fig_ls = go.Figure()
-    fig_ls.add_trace(
-        go.Bar(
-            x=ls_df["Client Type"],
-            y=ls_df["LS_Ratio"].round(3),
-            marker_color=bar_colors,
-            text=ls_df["LS_Ratio"].round(3),
-            textposition="auto",  # 'outside' clips small bars near 0
-            name="L/S Ratio",
-        )
-    )
-    fig_ls.add_hline(
-        y=1.0,
-        line_dash="dash",
-        line_color="#6366f1",
-        annotation_text="Neutral (1.0)",
-        annotation_position="top right",
-    )
-    fig_ls.update_layout(
-        title="Long/Short Ratio by Participant (Full Book)",
-        yaxis_title="Ratio",
-        showlegend=False,
-        **layout_args,
-        height=320,
-    )
-    charts["ls_ratio"] = fig_ls.to_html(include_plotlyjs="cdn", full_html=False)
-
-    # ── CHART 2: FII 5-Day Stacked Area ──────────────────────────────────────
-    dates_str = [d.strftime("%d %b") for d in sorted_dates]
-    fii_fut, fii_ce, fii_pe = [], [], []
-    for d in sorted_dates:
-        df_d = calculate_net_sentiment(data_map[d].copy())
-        fii_row = df_d[df_d["Client Type"] == "FII"]
-        if not fii_row.empty:
-            fii_fut.append(
-                int(
-                    fii_row["Future Index Long"].values[0]
-                    - fii_row["Future Index Short"].values[0]
-                )
-            )
-            fii_ce.append(
-                int(fii_row["Call Diff"].values[0])
-                if "Call Diff" in fii_row.columns
-                else 0
-            )
-            fii_pe.append(
-                int(fii_row["Put Diff"].values[0])
-                if "Put Diff" in fii_row.columns
-                else 0
-            )
-        else:
-            fii_fut.append(0)
-            fii_ce.append(0)
-            fii_pe.append(0)
-
-    fig_fii = go.Figure()
-    fig_fii.add_trace(
-        go.Scatter(
-            x=dates_str,
-            y=fii_fut,
-            name="Net Futures",
-            fill="tozeroy",
-            mode="lines+markers",
-            line=dict(color="#3b82f6", width=2),
-            fillcolor="rgba(59,130,246,0.15)",
-        )
-    )
-    fig_fii.add_trace(
-        go.Scatter(
-            x=dates_str,
-            y=fii_ce,
-            name="Net Calls (CE)",
-            fill="tozeroy",
-            mode="lines+markers",
-            line=dict(color="#10b981", width=2),
-            fillcolor="rgba(16,185,129,0.15)",
-        )
-    )
-    fig_fii.add_trace(
-        go.Scatter(
-            x=dates_str,
-            y=fii_pe,
-            name="Net Puts (PE)",
-            fill="tozeroy",
-            mode="lines+markers",
-            line=dict(color="#ef4444", width=2),
-            fillcolor="rgba(239,68,68,0.15)",
-        )
-    )
-    fig_fii.add_hline(y=0, line_dash="dot", line_color="#94a3b8")
-    fig_fii.update_layout(
-        title="FII 5-Day Net Position (Futures + CE + PE)",
-        yaxis_title="Net Contracts",
-        **layout_args,
-        height=360,
-        legend=dict(orientation="h", y=-0.15),
-    )
-    charts["fii_5day_area"] = fig_fii.to_html(include_plotlyjs="cdn", full_html=False)
-
-    # ── CHART 3: OI Distribution Donuts (Futures / Calls / Puts) ─────────────
-    fig_donuts = make_subplots(
-        rows=1,
-        cols=3,
-        specs=[[{"type": "domain"}, {"type": "domain"}, {"type": "domain"}]],
-        subplot_titles=("Index Futures Long", "Index Call Long", "Index Put Long"),
-    )
-    donut_colors = ["#3b82f6", "#8b5cf6", "#10b981", "#f59e0b"]
-
-    for col_idx, (col, title) in enumerate(
-        [
-            ("Future Index Long", "Index Futures"),
-            ("Option Index Call Long", "Index Calls"),
-            ("Option Index Put Long", "Index Puts"),
-        ],
-        start=1,
-    ):
-        fig_donuts.add_trace(
-            go.Pie(
-                labels=today_df["Client Type"].tolist(),
-                values=today_df[col].tolist(),
-                hole=0.5,
-                name=title,
-                marker=dict(colors=donut_colors),
-                textinfo="percent+label",
-                textfont_size=10,
-            ),
-            row=1,
-            col=col_idx,
         )
 
-    fig_donuts.update_layout(
-        title="OI Distribution — Who Controls What?",
-        showlegend=False,
-        **layout_args,
-        height=340,
-    )
-    charts["oi_donuts"] = fig_donuts.to_html(include_plotlyjs="cdn", full_html=False)
-
-    # ── CHART 4: Stock vs Index Futures (FII) over 5 days ────────────────────
-    fii_idx_net, fii_stk_net = [], []
-    for d in sorted_dates:
-        df_d = data_map[d]
-        fii_r = df_d[df_d["Client Type"] == "FII"]
-        if not fii_r.empty:
-            idx_net = int(fii_r["Future Index Long"].values[0]) - int(
-                fii_r["Future Index Short"].values[0]
-            )
-            stk_long = (
-                int(fii_r["Future Stock Long"].values[0])
-                if "Future Stock Long" in fii_r.columns
-                else 0
-            )
-            stk_short = (
-                int(fii_r["Future Stock Short"].values[0])
-                if "Future Stock Short" in fii_r.columns
-                else 0
-            )
-            stk_net = stk_long - stk_short
-        else:
-            idx_net = stk_net = 0
-        fii_idx_net.append(idx_net)
-        fii_stk_net.append(stk_net)
-
-    idx_colors = ["#059669" if v >= 0 else "#dc2626" for v in fii_idx_net]
-    stk_colors = ["#3b82f6" if v >= 0 else "#f97316" for v in fii_stk_net]
-
-    fig_stk = make_subplots(
-        rows=1,
-        cols=2,
-        subplot_titles=("FII Net Index Futures", "FII Net Stock Futures"),
-    )
-    fig_stk.add_trace(
-        go.Bar(
-            x=dates_str, y=fii_idx_net, marker_color=idx_colors, name="Index Futures"
-        ),
-        row=1,
-        col=1,
-    )
-    fig_stk.add_trace(
-        go.Bar(
-            x=dates_str, y=fii_stk_net, marker_color=stk_colors, name="Stock Futures"
-        ),
-        row=1,
-        col=2,
-    )
-    for col_idx in [1, 2]:
-        fig_stk.add_hline(
-            y=0, line_dash="dot", line_color="#94a3b8", row=1, col=col_idx
+    # Right-hand panel: the same net buy/sell numbers, grouped by participant.
+    by_participant = []
+    for p_idx, (_, label) in enumerate(PARTICIPANTS):
+        by_participant.append(
+            {
+                "name": label,
+                "rows": [
+                    {
+                        "label": b["rows"][p_idx]["net"]["label"],
+                        "c": b["rows"][p_idx]["net"]["c"],
+                        "instrument": b["name"],
+                        "t": b["rows"][p_idx]["net"]["t"],
+                    }
+                    for b in blocks
+                ],
+            }
         )
-    fig_stk.update_layout(
-        title="FII: Stock vs Index Futures (5-Day Rotation View)",
-        showlegend=False,
-        **layout_args,
-        height=320,
-    )
-    charts["fii_stock_vs_index"] = fig_stk.to_html(
-        include_plotlyjs="cdn", full_html=False
-    )
+    return {
+        "blocks": blocks,
+        "by_participant": by_participant,
+        "col_dates": col_dates,
+        "date": sessions[0][0].strftime("%d %b %Y"),
+        "prev_date": sessions[1][0].strftime("%d %b %Y"),
+    }
 
-    # ── CHART 5: Participant Aggression Heatmap (5-day rolling ΔSentiment) ───
-    # Skip the first date (delta is always 0 — no prior day), show d2..d5
-    aggr_data = {label: [] for label in ["FII", "PRO", "DII", "RETAIL"]}
-    participant_map = {"FII": "FII", "Pro": "PRO", "DII": "DII", "Client": "RETAIL"}
 
-    prev_sentiment = {}
-    aggr_dates = []  # dates that have a real delta (d2 onwards)
+def build_dashboard(anchor: date) -> dict | None:
+    """Everything the page needs, computed from at most TREND_DAYS sessions."""
+    sessions = load_sessions(anchor)
+    if len(sessions) < 2:
+        return None
+    chron = list(reversed(sessions))  # oldest -> newest for time series
+    cur_date, cur = sessions[0]
+    prev = sessions[1][1]
+    dates = [d.strftime("%d %b") for d, _ in chron]
 
-    for i, d in enumerate(sorted_dates):
-        df_d = calculate_net_sentiment(data_map[d].copy())
-        curr_sentiment = {}
-        for p_key, p_label in participant_map.items():
-            row = df_d[df_d["Client Type"] == p_key]
-            curr_sentiment[p_label] = (
-                int(row["Net Sentiment"].values[0]) if not row.empty else 0
-            )
+    activity = build_activity(cur, prev)
+    m = {lbl: metrics(cur[k]) for k, lbl in PARTICIPANTS}
+    col = lambda field: [m[lbl][field] for lbl in LABELS]  # one value per participant
 
-        if i > 0:  # skip day 0 — no delta possible
-            aggr_dates.append(d.strftime("%d %b"))
-            for p_label in ["FII", "PRO", "DII", "RETAIL"]:
-                aggr_data[p_label].append(
-                    curr_sentiment[p_label] - prev_sentiment[p_label]
-                )
+    # --- market-wide totals for the % normalisation of Call / Put Diff -------
+    call_tot = sum(m[l]["call_long"] for l in LABELS)
+    put_tot = sum(m[l]["put_long"] for l in LABELS)
+    call_pct = [pct(v, call_tot) for v in col("call_net")]
+    put_pct = [pct(v, put_tot) for v in col("put_net")]
 
-        prev_sentiment = curr_sentiment
-
-    participants_order = ["FII", "PRO", "DII", "RETAIL"]
-    z_matrix = [aggr_data[p] for p in participants_order]
-    text_matrix = [[f"{v:+,.0f}" for v in row] for row in z_matrix]
-
-    fig_aggr = go.Figure(
-        data=go.Heatmap(
-            z=z_matrix,
-            x=aggr_dates,  # 4 real dates (d2–d5), no wasted zero column
-            y=participants_order,
-            colorscale=[
-                [0.0, "#dc2626"],
-                [0.5, "#f8fafc"],
-                [1.0, "#059669"],
-            ],
-            zmid=0,
-            text=text_matrix,
-            texttemplate="%{text}",
-            textfont={"size": 11},
-            colorbar=dict(title="Δ Sentiment"),
-        )
-    )
-    fig_aggr.update_layout(
-        title="Participant Aggression Heatmap (Day-over-Day Sentiment Change)",
-        **layout_args,
-        height=280,
-    )
-    charts["aggr_heatmap"] = fig_aggr.to_html(include_plotlyjs="cdn", full_html=False)
-
-    # ── EXISTING: Call & Put Diff table ──────────────────────────────────────
-    step8_df = today_df.copy()
-
-    fig_tbl1 = go.Figure(
-        data=[
-            go.Table(
-                header=dict(
-                    values=[
-                        "Client Type",
-                        "Call Diff (Long−Short)",
-                        "Put Diff (Long−Short)",
-                    ],
-                    fill_color="#d1d5db",
-                    align="center",
-                    font=dict(color="black", size=11),
-                ),
-                cells=dict(
-                    values=[
-                        step8_df["Client Type"],
-                        step8_df["Call Diff"],
-                        step8_df["Put Diff"],
-                    ],
-                    fill_color=[
-                        ["#f3f4f6"] * len(step8_df),
-                        get_colors(step8_df["Call Diff"]),
-                        get_colors(step8_df["Put Diff"]),
-                    ],
-                    align="center",
-                    font=dict(color="black", size=10),
-                    height=28,
-                ),
-            )
-        ]
-    )
-    fig_tbl1.update_layout(
-        title="Call & Put Diff per Client", margin=dict(l=0, r=0, t=25, b=0), height=250
-    )
-    charts["step8_table1"] = fig_tbl1.to_html(include_plotlyjs="cdn", full_html=False)
-
-    fig_tbl2 = go.Figure(
-        data=[
-            go.Table(
-                header=dict(
-                    values=["Client Type", "Net Sentiment (Call+Put Diff)"],
-                    fill_color="#d1d5db",
-                    align="center",
-                    font=dict(color="black", size=11),
-                ),
-                cells=dict(
-                    values=[step8_df["Client Type"], step8_df["Net Sentiment"]],
-                    fill_color=[
-                        ["#f3f4f6"] * len(step8_df),
-                        get_colors(step8_df["Net Sentiment"]),
-                    ],
-                    align="center",
-                    font=dict(color="black", size=10),
-                    height=28,
-                ),
-            )
-        ]
-    )
-    fig_tbl2.update_layout(
-        title="Net Sentiment (Call+Put Diff)",
-        margin=dict(l=0, r=0, t=25, b=0),
-        height=250,
-    )
-    charts["step8_table2"] = fig_tbl2.to_html(include_plotlyjs="cdn", full_html=False)
-
-    # ── EXISTING: Side-by-side Call/Put bars ─────────────────────────────────
-    fig_sb = make_subplots(rows=1, cols=2, subplot_titles=("Call Diff", "Put Diff"))
-    fig_sb.add_trace(
-        go.Bar(
-            x=step8_df["Client Type"],
-            y=step8_df["Call Diff"],
-            marker_color=[
-                "#059669" if v >= 0 else "#dc2626" for v in step8_df["Call Diff"]
-            ],
-            name="Call Diff",
-        ),
-        row=1,
-        col=1,
-    )
-    fig_sb.add_trace(
-        go.Bar(
-            x=step8_df["Client Type"],
-            y=step8_df["Put Diff"],
-            marker_color=[
-                "#059669" if v >= 0 else "#dc2626" for v in step8_df["Put Diff"]
-            ],
-            name="Put Diff",
-        ),
-        row=1,
-        col=2,
-    )
-    fig_sb.update_layout(
-        title="Call & Put Diff per Client Type", showlegend=False, **layout_args
-    )
-    charts["step8_charts"] = fig_sb.to_html(include_plotlyjs="cdn", full_html=False)
-
-    # ── EXISTING: Position Intensity Heatmap ─────────────────────────────────
-    heatmap_data = today_df.set_index("Client Type")[
-        [
-            "Future Index Long",
-            "Future Index Short",
-            "Option Index Call Long",
-            "Option Index Put Long",
-        ]
+    # --- time series (oldest -> newest) --------------------------------------
+    day_m = [{lbl: metrics(r[k]) for k, lbl in PARTICIPANTS} for _, r in chron]
+    fii_idx = [d["FII"]["fut_net"] for d in day_m]
+    fii_stk = [
+        net(r["FII"], "Future Stock Long", "Future Stock Short") for _, r in chron
     ]
-    fig_heat = go.Figure(
-        data=go.Heatmap(
-            z=heatmap_data.values,
-            x=heatmap_data.columns,
-            y=heatmap_data.index,
-            colorscale="Viridis",
-            text=heatmap_data.values,
-            texttemplate="%{text:,.0f}",
-            textfont={"size": 12},
-            colorbar=dict(title="OI Value"),
+
+    trend_table = [
+        {
+            "date": dt,
+            **{
+                lbl: {
+                    "value": fmt_pct(d[lbl]["blended"]),
+                    "color": _tone(d[lbl]["blended"]),
+                }
+                for lbl in LABELS
+            },
+        }
+        for dt, d in zip(dates, day_m)
+    ]
+    aggr_rows = [
+        {
+            "name": lbl,
+            "values": [
+                round(day_m[i][lbl]["blended"] - day_m[i - 1][lbl]["blended"], 1)
+                for i in range(1, len(chron))
+            ],
+        }
+        for lbl in LABELS
+    ]
+
+    # --- tables ---------------------------------------------------------------
+    cell = lambda v, text: {"t": text, "c": _tone(v)}
+    sent_table = [
+        {
+            "name": lbl,
+            "fut_net": cell(x["fut_net"], fmt_signed(x["fut_net"])),
+            "fut_bias": cell(x["fut_bias"], fmt_pct(x["fut_bias"])),
+            "call": cell(x["call_net"], fmt_signed(x["call_net"])),
+            "put": cell(
+                -x["put_net"], fmt_signed(x["put_net"])
+            ),  # net long puts = bearish -> red
+            "opt_net": cell(x["opt_net"], fmt_signed(x["opt_net"])),
+            "opt_bias": cell(x["opt_bias"], fmt_pct(x["opt_bias"])),
+            "blended": cell(x["blended"], fmt_pct(x["blended"])),
+            "signal": x["signal"],
+            "signal_color": x["signal_color"],
+        }
+        for lbl, x in m.items()
+    ]
+
+    heat_cols = [
+        ("Fut Long", "Future Index Long"),
+        ("Fut Short", "Future Index Short"),
+        ("Call Long", "Option Index Call Long"),
+        ("Call Short", "Option Index Call Short"),
+        ("Put Long", "Option Index Put Long"),
+        ("Put Short", "Option Index Put Short"),
+    ]
+
+    # --- KPI cards ------------------------------------------------------------
+    fii, fii_card = (
+        m["FII"],
+        next(c for c in activity["summary_cards"] if c["name"] == "FII"),
+    )
+    kpis = [
+        {
+            "label": "Overall Bias",
+            "value": activity["overall_trend"],
+            "sub": f"FII-weighted day-over-day score {activity['score']:+d}",
+            "color": activity["overall_color"],
+        },
+        {
+            "label": "FII Net Futures Δ",
+            "value": fii_card["net_futures"],
+            "sub": f"Net now {fmt_signed(fii['fut_net'])} contracts",
+            "color": fii_card["color"],
+        },
+        {
+            "label": "FII Index Futures Long %",
+            "value": f"{fii['fut_long_pct']:.1f}%",
+            "sub": f"Long {fii['fut_long']:,} · Short {fii['fut_short']:,}",
+            "color": "green"
+            if fii["fut_long_pct"] > 50
+            else "red"
+            if fii["fut_long_pct"] < 50
+            else "gray",
+        },
+        {
+            "label": "FII Blended Bias",
+            "value": fmt_pct(fii["blended"]),
+            "sub": f"Futures {fmt_pct(fii['fut_bias'])} · Options {fmt_pct(fii['opt_bias'])}",
+            "color": fii["signal_color"],
+        },
+    ]
+
+    payload = {
+        "labels": LABELS,
+        "long_pct": {
+            "Full book": col("book_long_pct"),
+            "Index futures": col("fut_long_pct"),
+            "Index options (bullish OI)": col("opt_bull_pct"),
+        },
+        "contrib": {
+            "Index Futures": contribution(
+                cur, "Future Index Long", "Future Index Short"
+            ),
+            "Index Calls": contribution(
+                cur, "Option Index Call Long", "Option Index Call Short"
+            ),
+            "Index Puts": contribution(
+                cur, "Option Index Put Long", "Option Index Put Short"
+            ),
+        },
+        "diff": {
+            "call": col("call_net"),
+            "put": col("put_net"),
+            "opt_net": col("opt_net"),
+            "call_pct": call_pct,
+            "put_pct": put_pct,
+            "net_pct": [round(c - p, 1) for c, p in zip(call_pct, put_pct)],
+        },
+        "bias": {
+            "fut": col("fut_bias"),
+            "opt": col("opt_bias"),
+            "blended": col("blended"),
+        },
+        "fii_trend": {
+            "dates": dates,
+            "futures": fii_idx,
+            "calls": [d["FII"]["call_net"] for d in day_m],
+            "puts": [d["FII"]["put_net"] for d in day_m],
+        },
+        "fii_rotation": {"dates": dates, "index": fii_idx, "stock": fii_stk},
+        "aggr": {"dates": dates[1:], "rows": aggr_rows},
+        "heat": {
+            "columns": [c for c, _ in heat_cols],
+            "rows": [
+                {"name": lbl, "values": [_g(cur[k], c) for _, c in heat_cols]}
+                for k, lbl in PARTICIPANTS
+            ],
+        },
+        "threshold": SIGNAL_THRESHOLD,
+    }
+    return {
+        "date": cur_date.strftime("%d %b %Y"),
+        "data_date_iso": cur_date.isoformat(),
+        "prev_date": sessions[1][0].strftime("%d %b %Y"),
+        "data_ok": integrity_ok(cur),
+        "activity": activity,
+        "kpis": kpis,
+        "trend_table": trend_table,
+        "sent_table": sent_table,
+        "metrics": m,
+        "payload": payload,
+        "oi_changes": build_oi_changes(sessions),
+    }
+
+
+# -------------------------------------------------------- live NSE (cached) ---
+def _nse_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    try:
+        s.get(NSE_HOME_URL, timeout=4)
+    except requests.RequestException:
+        pass
+    return s
+
+
+def _cached(key: str, fn):
+    now = time.time()
+    hit = _live.get(key)
+    if hit and now - hit[0] < LIVE_TTL:
+        return hit[1]
+    if now - _live_fail.get(key, 0) < LIVE_FAIL_TTL:
+        return hit[1] if hit else None
+    try:
+        value = fn()
+    except Exception as exc:
+        log.warning("%s fetch failed: %s", key, exc)
+        _live_fail[key] = now
+        return hit[1] if hit else None
+    if value is not None:
+        _live[key] = (now, value)
+    return value
+
+
+def _fetch_nifty() -> dict | None:
+    resp = _nse_session().get(NSE_INDICES_URL, timeout=HTTP_TIMEOUT)
+    resp.raise_for_status()
+    for item in resp.json().get("data", []):
+        if item.get("index") == "NIFTY 50":
+            return {
+                "price": item.get("last", 0),
+                "change": item.get("variation", 0),
+                "pct_change": item.get("percentChange", 0),
+            }
+    return None
+
+
+def _fetch_option_chain() -> dict | None:
+    resp = _nse_session().get(NSE_OPTION_CHAIN_URL, timeout=HTTP_TIMEOUT)
+    resp.raise_for_status()
+    records = resp.json().get("records", {})
+    spot = records.get("underlyingValue") or 0
+    expiries = records.get("expiryDates") or []
+    nearest = expiries[0] if expiries else None
+
+    ce, pe = {}, {}
+    for rec in records.get("data", []):
+        if nearest and rec.get("expiryDate") != nearest:
+            continue
+        strike = rec.get("strikePrice")
+        if strike is None or (spot and not spot * 0.9 <= strike <= spot * 1.1):
+            continue
+        if "CE" in rec:
+            ce[strike] = rec["CE"].get("openInterest", 0)
+        if "PE" in rec:
+            pe[strike] = rec["PE"].get("openInterest", 0)
+    total_ce, total_pe = sum(ce.values()), sum(pe.values())
+    if not total_ce:
+        return None
+    pcr = round(total_pe / total_ce, 2)
+
+    def pain(price: float) -> float:
+        return sum(max(0, price - k) * oi for k, oi in ce.items()) + sum(
+            max(0, k - price) * oi for k, oi in pe.items()
         )
-    )
-    fig_heat.update_layout(
-        title=dict(
-            text="Position Intensity Heatmap", font=dict(size=18, color="#3b82f6")
-        ),
-        **layout_args,
-        height=500,
-    )
-    charts["position_heat"] = fig_heat.to_html(include_plotlyjs="cdn", full_html=False)
 
-    return charts
+    max_pain = min(sorted(set(ce) | set(pe)), key=pain)
+    top = lambda d: [
+        {"strike": k, "oi": v} for k, v in sorted(d.items(), key=lambda x: -x[1])[:5]
+    ]
+    return {
+        "pcr": pcr,
+        "pcr_signal": "Bullish"
+        if pcr >= 1.2
+        else "Bearish"
+        if pcr <= 0.8
+        else "Neutral",
+        "pcr_color": "green" if pcr >= 1.2 else "red" if pcr <= 0.8 else "gray",
+        "max_pain": max_pain,
+        "spot": spot,
+        "expiry": nearest,
+        "top_ce": top(ce),
+        "top_pe": top(pe),
+        "total_ce_oi": total_ce,
+        "total_pe_oi": total_pe,
+    }
 
 
-# ====================================================
-# Flask Routes
-# ====================================================
+def get_nifty_spot() -> dict | None:
+    return _cached("nifty", _fetch_nifty)
 
 
-@app.route("/", methods=["GET"])
+def get_option_chain_summary() -> dict | None:
+    if not ENABLE_OPTION_CHAIN:
+        return None
+    return _cached("option_chain", _fetch_option_chain)
+
+
+# ---------------------------------------------------------------- routes ---
+@app.after_request
+def cache_headers(resp):
+    if (
+        request.method == "GET"
+        and resp.status_code == 200
+        and "Cache-Control" not in resp.headers
+    ):
+        ttl = (
+            60
+            if request.path in ("/api/live", "/api/nifty", "/api/option-chain")
+            else 120
+        )
+        resp.headers["Cache-Control"] = (
+            f"public, s-maxage={ttl}, stale-while-revalidate=300"
+        )
+    return resp
+
+
+@app.route("/")
 def index():
-    try:
-        cleanup_old_cache_files(days_to_keep=7)
-    except Exception:
-        pass
-
-    # Date from query param (for date picker)
-    date_param = request.args.get("date")
-    target_date = None
-    if date_param:
+    today = now_ist().date()
+    raw = request.args.get("date", "").strip()
+    anchor, notice = today, None
+    if raw:
         try:
-            target_date = datetime.date.fromisoformat(date_param)
+            anchor = date.fromisoformat(raw)
+            if anchor > today:
+                anchor, notice = (
+                    today,
+                    "Future dates have no data - showing the latest session.",
+                )
         except ValueError:
-            flash("Invalid date format.", "warning")
+            notice = "Invalid date - showing the latest session."
 
-    charts = None
-    activity_data = None
-    nifty_spot = None
-    option_chain = None
-
+    dash = None
     try:
-        base_date = target_date or adjust_for_holidays(datetime.date.today())
-        charts = generate_advanced_charts(base_date)
-        activity_data = get_latest_activity_data(target_date)
-    except Exception as e:
-        logging.error(f"Index load error: {e}")
-        flash(f"Error loading market data: {str(e)}", "error")
-
-    # Live data — non-blocking, fail gracefully
-    try:
-        nifty_spot = get_nifty_spot()
+        dash = build_dashboard(anchor)
     except Exception:
-        pass
+        log.exception("Dashboard build failed")
+        notice = "Something went wrong while loading market data."
 
-    try:
-        option_chain = get_option_chain_summary()
-    except Exception:
-        pass
+    if dash and raw and notice is None and dash["data_date_iso"] != raw:
+        notice = f"No F&O data for {raw}. Showing the nearest earlier session ({dash['date']})."
 
     return render_template(
         "index.html",
-        charts=charts,
-        activity_data=activity_data,
-        nifty_spot=nifty_spot,
-        option_chain=option_chain,
-        selected_date=date_param or "",
-        current_year=datetime.date.today().year,
-        current_month=datetime.date.today().strftime("%B"),
+        dash=dash,
+        notice=notice,
+        selected_date=raw,
+        today=today.isoformat(),
+        auto_refresh=not raw,
+        show_option_chain=ENABLE_OPTION_CHAIN,
+        current_year=today.year,
+        current_month=today.strftime("%B"),
     )
 
 
-# ====================================================
-# JSON API Endpoints
-# ====================================================
+def _parse_date_arg():
+    raw = request.args.get("date")
+    if not raw:
+        return now_ist().date(), None
+    try:
+        return date.fromisoformat(raw), None
+    except ValueError:
+        return None, (jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400)
 
 
 @app.route("/api/activity")
 def api_activity():
-    """JSON endpoint: latest FII/DII activity data."""
-    date_param = request.args.get("date")
-    target_date = None
-    if date_param:
-        try:
-            target_date = datetime.date.fromisoformat(date_param)
-        except ValueError:
-            return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
-
-    data = get_latest_activity_data(target_date)
-    if data is None:
+    anchor, err = _parse_date_arg()
+    if err:
+        return err
+    dash = build_dashboard(anchor)
+    if not dash:
         return jsonify({"error": "No data available."}), 503
-    return jsonify(data)
+    return jsonify(
+        {"date": dash["date"], **dash["activity"], "trend_table": dash["trend_table"]}
+    )
 
 
 @app.route("/api/sentiment")
 def api_sentiment():
-    """JSON endpoint: latest net sentiment summary."""
-    today = adjust_for_holidays(datetime.date.today())
-    data_map = fetch_last_n_days_data(today, n=1)
-    if not data_map:
+    """Per-participant positions, bias % and signal for the chosen (or latest) session."""
+    anchor, err = _parse_date_arg()
+    if err:
+        return err
+    dash = build_dashboard(anchor)
+    if not dash:
         return jsonify({"error": "No data available."}), 503
-    df = calculate_net_sentiment(list(data_map.values())[0].copy())
-    result = {}
-    for _, row in df.iterrows():
-        result[row["Client Type"]] = {
-            "call_diff": int(row["Call Diff"]),
-            "put_diff": int(row["Put Diff"]),
-            "net_sentiment": int(row["Net Sentiment"]),
+    return jsonify(
+        {
+            "date": dash["data_date_iso"],
+            "data_ok": dash["data_ok"],
+            "signal_threshold_pct": SIGNAL_THRESHOLD,
+            "data": dash["metrics"],
+            "contribution": dash["payload"]["contrib"],
         }
-    return jsonify({"date": list(data_map.keys())[0].isoformat(), "data": result})
+    )
+
+
+@app.route("/api/live")
+def api_live():
+    """Nifty spot (and the option chain when enabled), fetched in parallel."""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        nifty_f = pool.submit(get_nifty_spot)
+        chain_f = pool.submit(get_option_chain_summary)
+        nifty, chain = nifty_f.result(), chain_f.result()
+    return jsonify(
+        {
+            "nifty": nifty,
+            "option_chain": chain,
+            "option_chain_enabled": ENABLE_OPTION_CHAIN,
+            "as_of": now_ist().strftime("%H:%M:%S"),
+        }
+    )
 
 
 @app.route("/api/nifty")
 def api_nifty():
-    """JSON endpoint: Nifty spot price."""
     data = get_nifty_spot()
-    if data is None:
-        return jsonify({"error": "Unable to fetch Nifty spot price."}), 503
-    return jsonify(data)
+    return (
+        (jsonify(data), 200)
+        if data
+        else (jsonify({"error": "Unable to fetch Nifty spot."}), 503)
+    )
 
 
 @app.route("/api/option-chain")
 def api_option_chain():
-    """JSON endpoint: option chain summary (PCR, max pain, support/resistance)."""
+    if not ENABLE_OPTION_CHAIN:
+        return jsonify({"error": "Option chain is currently disabled."}), 404
     data = get_option_chain_summary()
-    if data is None:
-        return jsonify({"error": "Unable to fetch option chain data."}), 503
-    return jsonify(data)
+    return (
+        (jsonify(data), 200)
+        if data
+        else (jsonify({"error": "Unable to fetch option chain."}), 503)
+    )
 
 
-@app.route("/cache-status")
-def cache_status():
-    if not app.debug and not is_vercel():
-        return "Cache status only available in debug mode", 403
-    try:
-        from storage import get_cache_status as _gcs
+@app.route("/api/health")
+def api_health():
+    return jsonify(
+        {
+            "status": "ok",
+            "time_ist": now_ist().isoformat(),
+            "cache_dir": CACHE_DIR,
+            "bundled_history": os.path.isdir(DATA_DIR),
+        }
+    )
 
-        status = _gcs()
-    except Exception:
-        status = {"cache_dir": CACHE_DIR, "memory_keys": list(_csv_cache.keys())}
-    return f"<pre>{json.dumps(status, indent=2, default=str)}</pre>"
 
-
-# ====================================================
-# Run App
-# ====================================================
 if __name__ == "__main__":
     app.run(debug=True, port=5001)

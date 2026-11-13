@@ -45,3 +45,4 @@ app.log
 .env
 .vercel
 .idea/
+cache

@@ -1,494 +1,835 @@
 {% extends "base.html" %}
-{% block title %}Dashboard - NSE F&O Analytics{% endblock %}
+{% block title %}NSE F&amp;O Analytics &middot; Participant Positioning{% endblock %}
 
 {% block content %}
+{# Tone lookup tables: one place that maps green/red/gray -> Tailwind classes (light + dark). #}
+{% set TXT = {'green': 'text-emerald-600 dark:text-emerald-400', 'red': 'text-rose-600 dark:text-rose-400', 'gray':
+'text-slate-500 dark:text-slate-400'} %}
+{% set CHIP = {'green': 'bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-300
+dark:ring-emerald-400/20',
+'red': 'bg-rose-50 text-rose-700 ring-rose-600/20 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-400/20',
+'gray': 'bg-slate-100 text-slate-600 ring-slate-500/20 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-500/20'} %}
+{% set INSTR = {'Future': 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300',
+'CE': 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300',
+'PE': 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300'} %}
 
-
-
-{# ══════════════════════════════════════════════
-   MACROS
-══════════════════════════════════════════════ #}
-
-{# Plain section header (used inside accordions too) #}
-{% macro sec_hdr(title, subtitle) %}
-<div class="flex items-center gap-2">
-    <div class="w-1 h-5 bg-gradient-to-b from-primary-500 to-purple-600 rounded-full flex-shrink-0"></div>
-    <div>
-        <p class="text-sm font-bold text-gray-900 dark:text-white leading-tight">{{ title }}</p>
-        {% if subtitle %}<p class="text-[10px] text-gray-500 dark:text-gray-400">{{ subtitle }}</p>{% endif %}
-    </div>
-</div>
-{% endmacro %}
-
-{# Accordion item — wraps any content block #}
-{% macro accordion(id, title, subtitle, open=false) %}
-<div class="accordion-item bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 overflow-hidden">
-    <button type="button"
-            onclick="toggleAccordion('{{ id }}')"
-            class="w-full px-4 py-3 flex items-center justify-between gap-3 text-left hover:bg-gray-50/50 dark:hover:bg-dark-700/40 transition-colors">
-        {{ sec_hdr(title, subtitle) }}
-        <svg id="chevron-{{ id }}" class="w-4 h-4 text-gray-400 flex-shrink-0 transition-transform duration-200 {% if open %}rotate-180{% endif %}"
-             fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-        </svg>
-    </button>
-    <div id="body-{{ id }}" class="{% if not open %}hidden{% endif %} border-t border-gray-200 dark:border-gray-700">
-        {{ caller() }}
-    </div>
-</div>
-{% endmacro %}
-
-{# Chart accordion — single chart inside accordion #}
-{% macro chart_accordion(id, title, subtitle, chart_key, open=false) %}
-{% call accordion(id, title, subtitle, open) %}
-<div class="p-2">{{ charts[chart_key] | safe }}</div>
-{% endcall %}
-{% endmacro %}
-
-<div class="space-y-3">
-
-{# ══════════════════════════════════════════════
-   1. HEADER BAR
-══════════════════════════════════════════════ #}
-<div class="relative overflow-hidden rounded-2xl bg-gradient-to-r from-primary-600 via-purple-600 to-indigo-700 px-4 py-3 text-white shadow-xl">
-    <div class="absolute inset-0 bg-black/10 pointer-events-none"></div>
-    <div class="relative z-10 flex flex-wrap items-center gap-3">
-
-        <div class="flex items-center gap-2 flex-1 min-w-0">
-            <div class="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center flex-shrink-0">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+<!-- ============================== HEADER ============================== -->
+<header
+    class="sticky top-0 z-30 border-b border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur">
+    <div class="max-w-7xl mx-auto px-4 h-14 flex items-center gap-3">
+        <a href="/" class="flex items-center gap-2.5 mr-auto min-w-0">
+            <span class="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center flex-shrink-0">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+                    stroke-linejoin="round" viewBox="0 0 24 24">
+                    <path d="M3 17l6-6 4 4 8-8M15 7h6v6" />
                 </svg>
-            </div>
-            <div>
-                <h1 class="text-sm font-bold leading-tight">NSE F&amp;O Analytics</h1>
-                <p class="text-blue-200 text-[10px]">Futures &amp; Options Analysis</p>
-            </div>
-        </div>
-
-        {% if nifty_spot %}
-        <div class="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-lg text-xs">
-            <span class="text-blue-200 font-medium">NIFTY</span>
-            <span class="font-bold text-sm">{{ "%.2f"|format(nifty_spot.price) }}</span>
-            <span class="font-semibold {% if nifty_spot.change >= 0 %}text-emerald-300{% else %}text-red-300{% endif %}">
-                {% if nifty_spot.change >= 0 %}▲{% else %}▼{% endif %}
-                {{ "%.2f"|format(nifty_spot.change|abs) }}
-                ({{ "%.2f"|format(nifty_spot.pct_change|abs) }}%)
             </span>
-        </div>
-        {% endif %}
+            <span class="min-w-0">
+                <span class="block text-sm font-bold leading-tight truncate">NSE F&amp;O Analytics</span>
+                <span class="block text-[11px] text-slate-500 dark:text-slate-400 leading-tight">Participant
+                    positioning</span>
+            </span>
+        </a>
 
-        <form method="GET" action="/" class="flex items-center gap-1.5">
-            <label class="text-blue-200 text-[10px] font-medium hidden sm:block">Date</label>
-            <input type="date" name="date" value="{{ selected_date }}"
-                   max="{{ '%Y-%m-%d' | strftime }}"
-                   class="bg-white/10 border border-white/20 text-white text-xs rounded-lg px-2 py-1.5
-                          focus:outline-none focus:ring-1 focus:ring-white/40 cursor-pointer [color-scheme:dark]"
-                   onchange="this.form.submit()">
-            {% if selected_date %}<a href="/" class="text-blue-200 hover:text-white text-[10px] underline">Reset</a>{% endif %}
+        <div id="nifty-box"
+            class="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs">
+            <span class="font-semibold text-slate-500 dark:text-slate-400">NIFTY 50</span>
+            <span id="nifty-price" class="font-mono font-semibold">&mdash;</span>
+            <span id="nifty-chg" class="font-mono font-medium"></span>
+        </div>
+
+        <form method="GET" action="/" class="flex items-center gap-2">
+            <input type="date" name="date" value="{{ selected_date }}" max="{{ today }}"
+                aria-label="Select trading date"
+                class="h-8 px-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/40 dark:[color-scheme:dark]"
+                onchange="this.form.submit()">
+            {% if selected_date %}<a href="/"
+                class="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline">Latest</a>{% endif %}
         </form>
 
-        <div class="flex items-center gap-1.5 bg-white/10 px-2.5 py-1.5 rounded-full text-[10px] font-medium">
-            <span id="ms-dot" class="w-1.5 h-1.5 rounded-full bg-gray-300"></span>
-            <span id="ms-text">—</span>
-        </div>
+        <span
+            class="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-slate-100 dark:bg-slate-800">
+            <span id="ms-dot" class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+            <span id="ms-text">&mdash;</span>
+        </span>
 
-
+        <button type="button" onclick="toggleTheme()" aria-label="Toggle dark mode"
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+            <svg class="w-4 h-4 dark:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </svg>
+            <svg class="w-4 h-4 hidden dark:block" fill="none" stroke="currentColor" stroke-width="2"
+                viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+            </svg>
+        </button>
     </div>
-</div>
+</header>
 
-{% if activity_data %}
+<div class="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
-{# ══════════════════════════════════════════════
-   2. DIVERGENCE ALERT (outside accordion — prominent)
-══════════════════════════════════════════════ #}
-{% if activity_data.divergence %}
-{% set div = activity_data.divergence %}
-<div class="flex items-start gap-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-xl px-4 py-3">
-    <svg class="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
-    </svg>
-    <div>
-        <p class="text-xs font-bold text-amber-800 dark:text-amber-300">FII / DII Divergence Detected</p>
-        <p class="text-[11px] text-amber-700 dark:text-amber-400 mt-0.5">
-            FII net futures <span class="font-bold {% if div.fii_color == 'green' %}text-emerald-600{% else %}text-red-500{% endif %}">{{ div.fii_net }}</span>
-            vs DII net futures <span class="font-bold {% if div.dii_color == 'green' %}text-emerald-600{% else %}text-red-500{% endif %}">{{ div.dii_net }}</span>
-            — institutional participants are on <strong>opposite sides</strong>. Watch for increased volatility.
-        </p>
-    </div>
-</div>
-{% endif %}
-
-{# ══════════════════════════════════════════════
-   3. NET FUTURES CHANGE — moved above activity table
-══════════════════════════════════════════════ #}
-<div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-sm rounded-xl border border-white/20 dark:border-gray-700/50 shadow-sm overflow-hidden">
-    <div class="px-4 py-2.5 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-dark-700/50 flex items-center gap-2">
-        <svg class="w-3.5 h-3.5 text-primary-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+    {% if notice %}
+    <div
+        class="flex items-start gap-3 rounded-xl border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 px-4 py-3 text-sm text-blue-800 dark:text-blue-200">
+        <svg class="w-4 h-4 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd"
+                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                clip-rule="evenodd" />
         </svg>
-        <span class="text-[11px] font-bold text-gray-600 dark:text-gray-300 uppercase tracking-wider">Net Futures Change (Day over Day)</span>
+        <span>{{ notice }}</span>
     </div>
-    <div class="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-gray-200 dark:divide-gray-700">
-        {% for card in activity_data.summary_cards %}
-        <div class="px-4 py-3 flex items-center justify-between">
-            <div>
-                <p class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{{ card.name }}</p>
-                <p class="text-sm font-bold mt-0.5 font-mono
-                    {% if card.color == 'green' %}text-emerald-600 dark:text-emerald-400
-                    {% elif card.color == 'red' %}text-red-500 dark:text-red-400
-                    {% else %}text-gray-500 dark:text-gray-400{% endif %}">{{ card.net_futures }}</p>
-            </div>
-            <div class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0
-                {% if card.color == 'green' %}bg-emerald-100 dark:bg-emerald-900/30
-                {% elif card.color == 'red' %}bg-red-100 dark:bg-red-900/30
-                {% else %}bg-gray-100 dark:bg-gray-700{% endif %}">
-                {% if card.color == 'green' %}
-                <svg class="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M5.293 9.707a1 1 0 010-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L11 7.414V15a1 1 0 11-2 0V7.414L6.707 9.707a1 1 0 01-1.414 0z" clip-rule="evenodd"/></svg>
-                {% elif card.color == 'red' %}
-                <svg class="w-3.5 h-3.5 text-red-500 dark:text-red-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M14.707 10.293a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L9 12.586V5a1 1 0 012 0v7.586l2.293-2.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
-                {% else %}
-                <span class="text-gray-400 text-xs font-bold">—</span>
-                {% endif %}
-            </div>
+    {% endif %}
+
+    {% if dash %}
+    {% set activity = dash.activity %}
+
+    <!-- Title row -->
+    <div class="flex flex-wrap items-end justify-between gap-2">
+        <div>
+            <h1 class="text-xl font-bold tracking-tight">Participant Positioning</h1>
+            <p class="text-sm text-slate-500 dark:text-slate-400">Session <strong
+                    class="font-semibold text-slate-700 dark:text-slate-200">{{ dash.date }}</strong> vs {{
+                dash.prev_date }} &middot; Index F&amp;O open interest</p>
+        </div>
+        <div class="flex items-center gap-3">
+            {% if dash.data_ok is not none %}
+            <span
+                class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium ring-1 ring-inset {{ CHIP['green'] if dash.data_ok else CHIP['red'] }}"
+                title="Participants add up to NSE's TOTAL row and every long has a matching short">
+                {% if dash.data_ok %}&#10003; Data check passed{% else %}&#9888; Data check failed{% endif %}
+            </span>
+            {% endif %}
+            <p id="live-stamp" class="text-[11px] text-slate-400"></p>
+        </div>
+    </div>
+
+    <!-- Divergence alert -->
+    {% if activity.divergence %}
+    {% set dv = activity.divergence %}
+    <div
+        class="flex items-start gap-3 rounded-xl border border-amber-200 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3">
+        <svg class="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd"
+                d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+                clip-rule="evenodd" />
+        </svg>
+        <div class="text-sm text-amber-900 dark:text-amber-200">
+            <p class="font-semibold">FII / DII divergence</p>
+            <p class="mt-0.5 text-amber-800 dark:text-amber-300/90">
+                FII net futures <span class="font-mono font-semibold {{ TXT[dv.fii_color] }}">{{ dv.fii_net }}</span>
+                while
+                DII <span class="font-mono font-semibold {{ TXT[dv.dii_color] }}">{{ dv.dii_net }}</span> &mdash;
+                institutions are on opposite sides of the futures market.
+            </p>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- KPI strip -->
+    <section class="grid grid-cols-2 {% if show_option_chain %}lg:grid-cols-5{% else %}lg:grid-cols-4{% endif %} gap-3"
+        aria-label="Key indicators">
+        {% for k in dash.kpis %}
+        <div class="card p-4">
+            <p class="eyebrow">{{ k.label }}</p>
+            <p class="mt-1.5 text-2xl font-bold font-mono tracking-tight {{ TXT[k.color] }}">{{ k.value }}</p>
+            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ k.sub }}</p>
         </div>
         {% endfor %}
-    </div>
-</div>
-
-{# ══════════════════════════════════════════════
-   4. FII DII ACTIVITY TABLE (always visible — per requirement)
-══════════════════════════════════════════════ #}
-<div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 overflow-hidden">
-    <div class="bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 text-white px-4 py-2.5 flex items-center justify-between">
-        <div>
-            <h2 class="text-sm font-bold leading-tight">FII DII F&amp;O Activity</h2>
-            <p class="text-gray-400 text-[10px]">{{ activity_data.date }} — Day over Day Change</p>
+        {# Option chain is switched off (ENABLE_OPTION_CHAIN = False in app.py). The PCR card below only renders when it
+        is on.
+        #}
+        {% if show_option_chain %}
+        <div class="card p-4">
+            <p class="eyebrow">Put-Call Ratio</p>
+            <p id="kpi-pcr" class="mt-1.5 text-2xl font-bold font-mono tracking-tight text-slate-400">&mdash;</p>
+            <p id="kpi-pcr-sub" class="mt-1 text-xs text-slate-500 dark:text-slate-400">Loading live data&hellip;</p>
         </div>
-        <div class="px-2.5 py-1 rounded-full text-white font-bold text-[10px] flex items-center gap-1.5 bg-gradient-to-r
-            {% if activity_data.overall_color == 'green' %}from-emerald-500 to-green-500
-            {% elif activity_data.overall_color == 'red' %}from-red-500 to-rose-500
-            {% else %}from-gray-500 to-slate-500{% endif %}">
-            <div class="w-1.5 h-1.5 rounded-full bg-white/70 {% if activity_data.overall_color != 'gray' %}animate-pulse{% endif %}"></div>
-            {{ activity_data.overall_trend }}
-        </div>
-    </div>
-    <div class="overflow-x-auto">
-        <table class="w-full text-xs" style="border-collapse:collapse">
-            <colgroup>
-                <col style="width:110px"><col style="width:68px"><col style="width:88px">
-                <col style="width:128px"><col style="width:84px">
-            </colgroup>
-            <thead>
-                <tr class="bg-gray-100 dark:bg-dark-700" style="border-bottom:2px solid #9ca3af">
-                    <th class="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide" style="border-right:2px solid #9ca3af">Participant</th>
-                    <th class="px-3 py-2 text-center font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide" style="border-right:1px solid #e5e7eb">Type</th>
-                    <th class="px-3 py-2 text-right font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide" style="border-right:1px solid #e5e7eb">Net Chg</th>
-                    <th class="px-3 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide" style="border-right:1px solid #e5e7eb">Activity</th>
-                    <th class="px-3 py-2 text-center font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Signal</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for participant in activity_data.data %}
-                {% for row in participant.rows %}
-                <tr class="hover:bg-blue-50/40 dark:hover:bg-dark-700/40 transition-colors"
-                    style="{% if loop.last %}border-bottom:2px solid #6b7280{% else %}border-bottom:1px solid #f3f4f6{% endif %}">
-                    {% if loop.first %}
-                    <td rowspan="{{ participant.rows | length }}"
-                        style="border-right:2px solid #9ca3af; border-bottom:2px solid #6b7280; background:#f9fafb"
-                        class="px-3 py-2 dark:bg-dark-800 align-middle whitespace-nowrap">
-                        <div class="flex items-center gap-1.5">
-                            <div class="w-6 h-6 rounded bg-gradient-to-br from-primary-500 to-purple-600 flex items-center justify-center text-white font-bold text-[10px] flex-shrink-0">{{ participant.name[:2] }}</div>
-                            <span class="font-bold text-gray-800 dark:text-white text-xs">{{ participant.name }}</span>
-                        </div>
-                    </td>
-                    {% endif %}
-                    <td class="px-3 py-2 text-center" style="border-right:1px solid #f3f4f6">
-                        <span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold
-                            {% if row.instrument == 'Future' %}bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300
-                            {% elif row.instrument == 'CE' %}bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300
-                            {% else %}bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300{% endif %}">
-                            {{ row.instrument }}
-                        </span>
-                    </td>
-                    <td class="px-3 py-2 text-right font-mono font-semibold
-                        {% if row.color == 'green' %}text-emerald-600 dark:text-emerald-400
-                        {% elif row.color == 'red' %}text-red-500 dark:text-red-400
-                        {% else %}text-gray-500 dark:text-gray-400{% endif %}"
-                        style="border-right:1px solid #f3f4f6">{{ row.change }}</td>
-                    <td class="px-3 py-2" style="border-right:1px solid #f3f4f6">
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium
-                            {% if row.color == 'green' %}bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300
-                            {% elif row.color == 'red' %}bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300
-                            {% else %}bg-gray-100 text-gray-600 dark:bg-gray-700/50 dark:text-gray-400{% endif %}">
-                            <span class="w-1 h-1 rounded-full flex-shrink-0
-                                {% if row.color == 'green' %}bg-emerald-500
-                                {% elif row.color == 'red' %}bg-red-500
-                                {% else %}bg-gray-400{% endif %}"></span>
-                            {{ row.activity }}
-                        </span>
-                    </td>
-                    <td class="px-3 py-2 text-center">
-                        <span class="inline-flex items-center gap-0.5 px-2 py-0.5 rounded text-[10px] font-bold
-                            {% if row.color == 'green' %}bg-emerald-500 text-white
-                            {% elif row.color == 'red' %}bg-red-500 text-white
-                            {% else %}bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300{% endif %}">
-                            {% if row.color == 'green' %}▲{% elif row.color == 'red' %}▼{% else %}—{% endif %} {{ row.trend }}
-                        </span>
-                    </td>
-                </tr>
-                {% endfor %}
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
-
-{% else %}
-{# ── EMPTY STATE ── #}
-<div class="bg-white/70 dark:bg-dark-800/70 backdrop-blur-xl rounded-2xl shadow-xl border border-white/20 dark:border-gray-700/50 p-10 text-center">
-    <div class="w-14 h-14 rounded-2xl bg-gray-100 dark:bg-dark-700 flex items-center justify-center mx-auto mb-4">
-        <svg class="w-7 h-7 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-        </svg>
-    </div>
-    <h3 class="text-base font-bold text-gray-700 dark:text-gray-300 mb-1">No Data Available</h3>
-    <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">Data not yet available — NSE publishes after 7 PM IST.</p>
-    <a href="/" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold transition-colors">
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-        Load Latest
-    </a>
-</div>
-{% endif %}
-
-{% if charts %}
-
-{# ══════════════════════════════════════════════
-   ACCORDION SECTIONS 5 – 14
-   Each uses the accordion macro — collapsed by default
-   except the first one which opens by default.
-══════════════════════════════════════════════ #}
-
-{# 5. L/S Ratio #}
-{% call accordion("ls_ratio", "Long / Short Ratio — Full Book", "Total long ÷ short contracts per participant · >1 = net long (bullish)", true) %}
-<div class="p-2">{{ charts['ls_ratio'] | safe }}</div>
-{% endcall %}
-
-{# 6. OI Donuts #}
-{% call accordion("oi_donuts", "OI Distribution — Who Controls What?", "Share of Futures, Calls and Puts OI per participant") %}
-<div class="p-2">{{ charts['oi_donuts'] | safe }}</div>
-{% endcall %}
-
-{# 7. Call & Put Diff tables (side by side) #}
-{% call accordion("call_put_diff", "Call & Put Difference + Net Sentiment", "Net long−short per participant today") %}
-<div class="grid grid-cols-1 xl:grid-cols-2 gap-0 divide-y xl:divide-y-0 xl:divide-x divide-gray-200 dark:divide-gray-700">
-    <div class="p-2">{{ charts['step8_table1'] | safe }}</div>
-    <div class="p-2">{{ charts['step8_table2'] | safe }}</div>
-</div>
-{% endcall %}
-
-{# 8. Participant activity bars #}
-{% call accordion("activity_bars", "Participant Activity Comparison", "Call & Put Diff side by side") %}
-<div class="p-2">{{ charts['step8_charts'] | safe }}</div>
-{% endcall %}
-
-{# 9. FII 5-day area #}
-{% call accordion("fii_5day", "FII 5-Day Net Position", "Futures, Calls & Puts absolute net positions over last 5 sessions") %}
-<div class="p-2">{{ charts['fii_5day_area'] | safe }}</div>
-{% endcall %}
-
-{# 10. FII stock vs index #}
-{% call accordion("fii_rotation", "FII: Stock vs Index Futures", "Rotation view — selling index but buying stocks = selective risk-on") %}
-<div class="p-2">{{ charts['fii_stock_vs_index'] | safe }}</div>
-{% endcall %}
-
-{# 11. 5-day trend table #}
-{% if activity_data and activity_data.trend_table %}
-{% call accordion("trend_table", "5-Day Net Sentiment Trend", "Call+Put Diff per participant — last 5 trading sessions") %}
-<div class="overflow-x-auto">
-    <table class="w-full text-xs" style="border-collapse:collapse">
-        <thead>
-            <tr class="bg-gray-50 dark:bg-dark-700" style="border-bottom:1px solid #e5e7eb">
-                <th class="px-4 py-2 text-left font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide" style="border-right:1px solid #e5e7eb">Date</th>
-                <th class="px-4 py-2 text-center font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide" style="border-right:1px solid #e5e7eb">FII</th>
-                <th class="px-4 py-2 text-center font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide" style="border-right:1px solid #e5e7eb">PRO</th>
-                <th class="px-4 py-2 text-center font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide" style="border-right:1px solid #e5e7eb">DII</th>
-                <th class="px-4 py-2 text-center font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">RETAIL</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for row in activity_data.trend_table %}
-            <tr class="hover:bg-gray-50/50 dark:hover:bg-dark-700/40" style="border-bottom:1px solid #f3f4f6">
-                <td class="px-4 py-2 font-semibold text-gray-700 dark:text-gray-300" style="border-right:1px solid #e5e7eb">{{ row.date }}</td>
-                {% for col in ['FII', 'PRO', 'DII', 'RETAIL'] %}
-                <td class="px-4 py-2 text-center font-mono font-semibold
-                    {% if row[col].color == 'green' %}text-emerald-600 dark:text-emerald-400
-                    {% else %}text-red-500 dark:text-red-400{% endif %}"
-                    style="border-right:{% if not loop.last %}1px solid #e5e7eb{% else %}none{% endif %}">
-                    {{ row[col].value }}
-                </td>
-                {% endfor %}
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% endcall %}
-{% endif %}
-
-{# 12. Aggression heatmap #}
-{% call accordion("aggr_heatmap", "Participant Aggression Heatmap", "Day-over-day Δ sentiment · green = improving bullish, red = deteriorating") %}
-<div class="p-2">{{ charts['aggr_heatmap'] | safe }}</div>
-{% endcall %}
-
-{# 13. Position intensity heatmap #}
-{% call accordion("pos_heatmap", "Position Intensity Heatmap", "Absolute OI across all participants and instruments") %}
-<div class="p-2">{{ charts['position_heat'] | safe }}</div>
-{% endcall %}
-
-{# 14. Option chain #}
-{% if option_chain %}
-{% call accordion("option_chain", "Option Chain Summary", "Live PCR, Max Pain, and key support/resistance strikes") %}
-<div class="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-gray-200 dark:divide-gray-700">
-    <div class="p-4 flex flex-col gap-2">
-        <div class="flex items-center justify-between">
-            <p class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Put-Call Ratio (PCR)</p>
-            <span class="text-[10px] px-2 py-0.5 rounded-full font-bold
-                {% if option_chain.pcr_color == 'green' %}bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300
-                {% elif option_chain.pcr_color == 'red' %}bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300
-                {% else %}bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300{% endif %}">
-                {{ option_chain.pcr_signal }}
-            </span>
-        </div>
-        <p class="text-4xl font-bold font-mono
-            {% if option_chain.pcr_color == 'green' %}text-emerald-600 dark:text-emerald-400
-            {% elif option_chain.pcr_color == 'red' %}text-red-500 dark:text-red-400
-            {% else %}text-gray-700 dark:text-gray-300{% endif %}">{{ option_chain.pcr }}</p>
-        <p class="text-[10px] text-gray-400">≥1.2 Bullish · ≤0.8 Bearish</p>
-    </div>
-    <div class="p-4 flex flex-col gap-2">
-        <p class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Max Pain Strike</p>
-        <p class="text-4xl font-bold font-mono text-primary-600 dark:text-primary-400">{{ option_chain.max_pain }}</p>
-        <p class="text-[10px] text-gray-400">Strike causing min pain to option writers</p>
-        {% if option_chain.spot %}
-        <p class="text-[10px] text-gray-500">
-            Spot: <span class="font-semibold">{{ "%.0f"|format(option_chain.spot) }}</span>
-            · Diff: <span class="font-semibold {% if option_chain.max_pain > option_chain.spot %}text-red-500{% else %}text-emerald-600{% endif %}">
-                {{ "%.0f"|format((option_chain.max_pain - option_chain.spot)|abs) }} pts
-                {% if option_chain.max_pain > option_chain.spot %}above{% else %}below{% endif %}
-            </span>
-        </p>
         {% endif %}
-    </div>
-    <div class="p-4">
-        <div class="grid grid-cols-2 gap-3">
-            <div>
-                <p class="text-[10px] font-semibold text-red-400 uppercase tracking-wider mb-1.5">🔴 Resistance (CE)</p>
-                {% for item in option_chain.top_ce %}
-                <div class="flex items-center justify-between text-[10px] py-0.5">
-                    <span class="font-bold text-gray-700 dark:text-gray-300">{{ item.strike }}</span>
-                    <span class="text-gray-500 dark:text-gray-400">{{ item.oi }}</span>
+    </section>
+
+    <!-- Tabs -->
+    <nav class="flex gap-1 overflow-x-auto pb-1" role="tablist" aria-label="Dashboard sections">
+        <button class="tab-btn active" role="tab" data-tab="overview">Overview</button>
+        <button class="tab-btn" role="tab" data-tab="oichanges">OI Changes</button>
+        <button class="tab-btn" role="tab" data-tab="positioning">Positioning</button>
+        <button class="tab-btn" role="tab" data-tab="trends">Trends</button>
+        {% if show_option_chain %}<button class="tab-btn" role="tab" data-tab="options">Option Chain</button>{% endif %}
+    </nav>
+
+    <!-- ============================ OVERVIEW ============================ -->
+    <section id="pane-overview" data-pane class="space-y-6">
+
+        <div class="card overflow-hidden">
+            <div class="card-head">
+                <div>
+                    <h2 class="card-title">Net Futures Change &middot; Day over Day</h2>
+                    <p class="card-sub">Change in net index-futures position (long &minus; short)</p>
                 </div>
-                {% endfor %}
             </div>
-            <div>
-                <p class="text-[10px] font-semibold text-emerald-500 uppercase tracking-wider mb-1.5">🟢 Support (PE)</p>
-                {% for item in option_chain.top_pe %}
-                <div class="flex items-center justify-between text-[10px] py-0.5">
-                    <span class="font-bold text-gray-700 dark:text-gray-300">{{ item.strike }}</span>
-                    <span class="text-gray-500 dark:text-gray-400">{{ item.oi }}</span>
+            <div
+                class="grid grid-cols-2 md:grid-cols-4 divide-x divide-y md:divide-y-0 divide-slate-200 dark:divide-slate-800">
+                {% for c in activity.summary_cards %}
+                <div class="px-5 py-4">
+                    <p class="eyebrow">{{ c.name }}</p>
+                    <p class="mt-1 text-lg font-bold font-mono {{ TXT[c.color] }}">
+                        {% if c.color == 'green' %}&#9650;{% elif c.color == 'red' %}&#9660;{% else %}&ndash;{% endif %}
+                        {{ c.net_futures }}
+                    </p>
                 </div>
                 {% endfor %}
             </div>
         </div>
+
+        <div class="card overflow-hidden">
+            <div class="card-head">
+                <div>
+                    <h2 class="card-title">FII &middot; DII &middot; PRO &middot; Retail F&amp;O Activity</h2>
+                    <p class="card-sub">{{ dash.date }} &mdash; change in net position by instrument</p>
+                </div>
+                <span
+                    class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ring-1 ring-inset {{ CHIP[activity.overall_color] }}">
+                    <span class="w-1.5 h-1.5 rounded-full bg-current"></span>{{ activity.overall_trend }}
+                </span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead
+                        class="bg-slate-50 dark:bg-slate-800/50 text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        <tr>
+                            <th class="px-5 py-2.5 text-left font-semibold">Participant</th>
+                            <th class="px-4 py-2.5 text-center font-semibold">Type</th>
+                            <th class="px-4 py-2.5 text-right font-semibold">Net change</th>
+                            <th class="px-4 py-2.5 text-left font-semibold">Activity</th>
+                            <th class="px-5 py-2.5 text-center font-semibold">Signal</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for p in activity.data %}
+                        {% for row in p.rows %}
+                        <tr
+                            class="{% if loop.first %}border-t-2 border-slate-200 dark:border-slate-700{% else %}border-t border-slate-100 dark:border-slate-800{% endif %} hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                            {% if loop.first %}
+                            <td rowspan="{{ p.rows | length }}"
+                                class="px-5 py-2 align-middle whitespace-nowrap bg-slate-50/60 dark:bg-slate-800/30">
+                                <div class="flex items-center gap-2.5">
+                                    <span
+                                        class="w-7 h-7 rounded-md bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 flex items-center justify-center text-[10px] font-bold">{{
+                                        p.name[:2] }}</span>
+                                    <span class="font-semibold">{{ p.name }}</span>
+                                </div>
+                            </td>
+                            {% endif %}
+                            <td class="px-4 py-2 text-center"><span
+                                    class="inline-block px-2 py-0.5 rounded text-[11px] font-bold {{ INSTR[row.instrument] }}">{{
+                                    row.instrument }}</span></td>
+                            <td class="px-4 py-2 text-right font-mono font-semibold {{ TXT[row.color] }}">{{ row.change
+                                }}</td>
+                            <td class="px-4 py-2 text-slate-600 dark:text-slate-300">{{ row.activity }}</td>
+                            <td class="px-5 py-2 text-center"><span
+                                    class="inline-flex px-2.5 py-0.5 rounded-full text-[11px] font-semibold ring-1 ring-inset {{ CHIP[row.color] }}">{{
+                                    row.trend }}</span></td>
+                        </tr>
+                        {% endfor %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="card">
+                <div class="card-head">
+                    <div>
+                        <h2 class="card-title">Call &amp; Put Difference</h2>
+                        <p class="card-sub">Net long &minus; short. Calls: + is bullish. Puts: + is bearish. Diamond =
+                            options net (bullish &minus; bearish).</p>
+                    </div>
+                    <div
+                        class="flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 text-[11px] font-medium flex-shrink-0">
+                        <button type="button" id="diff-btn-contracts" onclick="setDiffMode('contracts')"
+                            class="px-2.5 py-1 rounded-md">Contracts</button>
+                        <button type="button" id="diff-btn-pct" onclick="setDiffMode('pct')"
+                            class="px-2.5 py-1 rounded-md">% of OI</button>
+                    </div>
+                </div>
+                <div class="p-4">
+                    <div class="relative h-72"><canvas id="c-diff"></canvas></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-head">
+                    <div>
+                        <h2 class="card-title">Sentiment Score</h2>
+                        <p class="card-sub">Bias % = (long &minus; short) &divide; (long + short). Beyond &plusmn;{{
+                            dash.payload.threshold | int }}% blended = Bullish / Bearish.</p>
+                    </div>
+                </div>
+                <div class="p-4">
+                    <div class="relative h-72"><canvas id="c-bias"></canvas></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ============================ OI CHANGES ============================ -->
+    {% set oi = dash.oi_changes %}
+    <section id="pane-oichanges" data-pane class="space-y-4 hidden">
+        <div class="flex flex-wrap items-end justify-between gap-2">
+            <div>
+                <h2 class="text-base font-bold">OI Changes &middot; Futures &amp; Options</h2>
+                <p class="text-sm text-slate-500 dark:text-slate-400">{{ oi.date }} vs {{ oi.prev_date }}. Green =
+                    bullish effect, red = bearish effect (long puts and short calls count as bearish).</p>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px] gap-6 items-start">
+
+            <!-- Left: changes in longs / shorts, net buy-sell and positions carried -->
+            <div class="card overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-xs whitespace-nowrap">
+                        {% for b in oi.blocks %}
+                        <thead>
+                            <tr
+                                class="bg-slate-900 text-white dark:bg-slate-800 text-[11px] uppercase tracking-wider {% if not loop.first %}border-t-4 border-white dark:border-slate-900{% endif %}">
+                                <th class="px-3 py-2 text-left font-semibold">{{ b.name }}</th>
+                                <th colspan="2" class="px-3 py-2 text-left font-semibold">Longs</th>
+                                <th colspan="2" class="px-3 py-2 text-left font-semibold">Shorts</th>
+                                <th colspan="2" class="px-3 py-2 text-left font-semibold">Net buy / sell today</th>
+                                <th class="px-3 py-2 text-right font-semibold border-l border-white/20">Today</th>
+                                <th class="px-3 py-2 text-right font-semibold">Prev <span
+                                        class="font-normal opacity-60">{{ oi.col_dates[1] }}</span></th>
+                                <th class="px-3 py-2 text-right font-semibold">Prev&minus;2 <span
+                                        class="font-normal opacity-60">{{ oi.col_dates[2] }}</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in b.rows %}
+                            <tr
+                                class="border-t border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                <td class="px-3 py-1.5 font-semibold">{{ r.name }}</td>
+                                <td class="pl-3 py-1.5 font-medium {{ TXT[r.long.c] }}">{{ r.long.label }}</td>
+                                <td class="pr-3 py-1.5 text-right font-mono font-semibold {{ TXT[r.long.c] }}">{{
+                                    r.long.t }}</td>
+                                <td class="pl-3 py-1.5 font-medium {{ TXT[r.short.c] }}">{{ r.short.label }}</td>
+                                <td class="pr-3 py-1.5 text-right font-mono font-semibold {{ TXT[r.short.c] }}">{{
+                                    r.short.t }}</td>
+                                <td class="pl-3 py-1.5 font-medium {{ TXT[r.net.c] }}">{{ r.net.label }}</td>
+                                <td class="pr-3 py-1.5 text-right font-mono font-bold {{ TXT[r.net.c] }}">{{ r.net.t }}
+                                </td>
+                                {% for p in r.pos %}
+                                <td
+                                    class="px-3 py-1.5 text-right font-mono font-semibold {{ TXT[p.c] }} {% if loop.first %}border-l border-slate-200 dark:border-slate-700{% endif %}">
+                                    {{ p.t }}</td>
+                                {% endfor %}
+                            </tr>
+                            {% endfor %}
+                            <tr
+                                class="border-t border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/30 text-slate-400">
+                                <td class="px-3 py-1.5 italic" colspan="6">Total (all participants, nets to zero apart
+                                    from rounding)</td>
+                                <td class="pr-3 py-1.5 text-right font-mono">{{ b.total_net }}</td>
+                                {% for t in b.total_pos %}
+                                <td
+                                    class="px-3 py-1.5 text-right font-mono {% if loop.first %}border-l border-slate-200 dark:border-slate-700{% endif %}">
+                                    {{ t }}</td>
+                                {% endfor %}
+                            </tr>
+                        </tbody>
+                        {% endfor %}
+                    </table>
+                </div>
+            </div>
+
+            <!-- Right: positions bought / sold today, grouped by participant -->
+            <div class="card overflow-hidden xl:sticky xl:top-20">
+                <div class="card-head">
+                    <div>
+                        <h3 class="card-title">Bought / Sold Today</h3>
+                        <p class="card-sub">Net change by participant</p>
+                    </div>
+                </div>
+                {% for p in oi.by_participant %}
+                <table class="w-full text-xs">
+                    <tbody>
+                        {% for r in p.rows %}
+                        <tr
+                            class="{% if loop.first %}border-t-2 border-slate-200 dark:border-slate-700{% else %}border-t border-slate-100 dark:border-slate-800{% endif %}">
+                            {% if loop.first %}
+                            <td rowspan="{{ p.rows | length }}"
+                                class="px-3 py-1.5 font-bold align-middle bg-slate-50/60 dark:bg-slate-800/30 w-16">{{
+                                p.name }}</td>
+                            {% endif %}
+                            <td class="px-2 py-1.5 font-medium {{ TXT[r.c] }}">{{ r.label }}</td>
+                            <td class="px-2 py-1.5 text-slate-600 dark:text-slate-300">{{ r.instrument }}</td>
+                            <td class="px-3 py-1.5 text-right font-mono font-semibold {{ TXT[r.c] }}">{{ r.t }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endfor %}
+            </div>
+        </div>
+    </section>
+
+    <!-- =========================== POSITIONING ===========================
+<section id="pane-positioning" data-pane class="space-y-6 hidden">
+
+    <div class="card overflow-hidden">
+        <div class="card-head"><div><h2 class="card-title">Sentiment by Participant</h2><p class="card-sub">Index futures and index options, {{ dash.date }}. Green = bullish exposure, red = bearish exposure.</p></div></div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-slate-50 dark:bg-slate-800/50 text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    <tr>
+                        <th class="px-5 py-2.5 text-left font-semibold">Participant</th>
+                        <th class="px-3 py-2.5 text-right font-semibold">Fut Net</th>
+                        <th class="px-3 py-2.5 text-right font-semibold">Fut Bias</th>
+                        <th class="px-3 py-2.5 text-right font-semibold">Call Diff</th>
+                        <th class="px-3 py-2.5 text-right font-semibold">Put Diff</th>
+                        <th class="px-3 py-2.5 text-right font-semibold">Options Net</th>
+                        <th class="px-3 py-2.5 text-right font-semibold">Options Bias</th>
+                        <th class="px-3 py-2.5 text-right font-semibold">Blended</th>
+                        <th class="px-5 py-2.5 text-center font-semibold">Signal</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for r in dash.sent_table %}
+                    <tr class="border-t border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                        <td class="px-5 py-2.5 font-semibold">{{ r.name }}</td>
+                        <td class="px-3 py-2.5 text-right font-mono {{ TXT[r.fut_net.c] }}">{{ r.fut_net.t }}</td>
+                        <td class="px-3 py-2.5 text-right font-mono {{ TXT[r.fut_bias.c] }}">{{ r.fut_bias.t }}</td>
+                        <td class="px-3 py-2.5 text-right font-mono {{ TXT[r.call.c] }}">{{ r.call.t }}</td>
+                        <td class="px-3 py-2.5 text-right font-mono {{ TXT[r.put.c] }}">{{ r.put.t }}</td>
+                        <td class="px-3 py-2.5 text-right font-mono font-semibold {{ TXT[r.opt_net.c] }}">{{ r.opt_net.t }}</td>
+                        <td class="px-3 py-2.5 text-right font-mono {{ TXT[r.opt_bias.c] }}">{{ r.opt_bias.t }}</td>
+                        <td class="px-3 py-2.5 text-right font-mono font-bold {{ TXT[r.blended.c] }}">{{ r.blended.t }}</td>
+                        <td class="px-5 py-2.5 text-center"><span class="inline-flex px-2.5 py-0.5 rounded-full text-[11px] font-semibold ring-1 ring-inset {{ CHIP[r.signal_color] }}">{{ r.signal }}</span></td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <details class="border-t border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400">
+            <summary class="px-5 py-3 cursor-pointer font-medium text-slate-700 dark:text-slate-300">How these numbers are calculated</summary>
+            <div class="px-5 pb-4 space-y-1.5 leading-relaxed">
+                <p><strong>Call Diff</strong> = Call Long &minus; Call Short &nbsp;&middot;&nbsp; <strong>Put Diff</strong> = Put Long &minus; Put Short. A net long call profits if the market rises; a net long put profits if it falls, so Put Diff is coloured the opposite way.</p>
+                <p><strong>Options Net</strong> = (Call Long + Put Short) &minus; (Call Short + Put Long) = Call Diff &minus; Put Diff. <strong>Options Bias</strong> = Options Net &divide; (Call Long + Put Short + Call Short + Put Long).</p>
+                <p><strong>Fut Bias</strong> = (Long &minus; Short) &divide; (Long + Short). <strong>Blended</strong> = average of Fut Bias and Options Bias. Signal is Bullish above +{{ dash.payload.threshold | int }}%, Bearish below &minus;{{ dash.payload.threshold | int }}%.</p>
+                <p>DII options are mostly long puts bought as a hedge against their large stock holdings, so DII options bias reads strongly bearish while their futures are net long. Read the two parts separately for DII.</p>
+            </div>
+        </details>
     </div>
+
+    <div class="card">
+        <div class="card-head"><div><h2 class="card-title">Who holds the open interest?</h2><p class="card-sub">Each participant's share of the market's long OI and short OI</p></div></div>
+        <div class="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+            {% for i in range(3) %}
+            <div>
+                <p id="contrib-title-{{ i }}" class="eyebrow text-center mb-2"></p>
+                <div class="relative h-60"><canvas id="c-contrib-{{ i }}"></canvas></div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="card">
+            <div class="card-head"><div><h2 class="card-title">Net Contribution</h2><p class="card-sub">Net position as % of market OI. Each group sums to zero: every long has a short on the other side.</p></div></div>
+            <div class="p-4"><div class="relative h-72"><canvas id="c-netcontrib"></canvas></div></div>
+        </div>
+        <div class="card">
+            <div class="card-head"><div><h2 class="card-title">Long Share of Each Book</h2><p class="card-sub">Long &divide; (long + short). 50% is balanced.</p></div></div>
+            <div class="p-4"><div class="relative h-72"><canvas id="c-longpct"></canvas></div></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-head"><div><h2 class="card-title">Position Intensity</h2><p class="card-sub">Absolute open interest &middot; shading is relative within each column</p></div></div>
+        <div id="heat-pos" class="p-4 overflow-x-auto"></div>
+    </div>
+</section>
+
+<!-- ============================== TRENDS ============================== -->
+    <section id="pane-trends" data-pane class="space-y-6 hidden">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="card">
+                <div class="card-head">
+                    <div>
+                        <h2 class="card-title">FII Net Position &middot; 5 Sessions</h2>
+                        <p class="card-sub">Index futures, call diff and put diff (contracts)</p>
+                    </div>
+                </div>
+                <div class="p-4">
+                    <div class="relative h-72"><canvas id="c-fii"></canvas></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-head">
+                    <div>
+                        <h2 class="card-title">FII Rotation &middot; Index vs Stock Futures</h2>
+                        <p class="card-sub">Selling index while buying stocks = selective risk-on</p>
+                    </div>
+                </div>
+                <div class="p-4">
+                    <div class="relative h-72"><canvas id="c-rot"></canvas></div>
+                </div>
+            </div>
+        </div>
+
+        {% if dash.trend_table %}
+        <div class="card overflow-hidden">
+            <div class="card-head">
+                <div>
+                    <h2 class="card-title">Blended Bias &middot; Last {{ dash.trend_table | length }} Sessions</h2>
+                    <p class="card-sub">Average of futures bias % and options bias % per participant</p>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead
+                        class="bg-slate-50 dark:bg-slate-800/50 text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        <tr>
+                            <th class="px-5 py-2.5 text-left font-semibold">Date</th>
+                            {% for col in ['FII', 'PRO', 'DII', 'RETAIL'] %}<th
+                                class="px-4 py-2.5 text-right font-semibold">{{ col }}</th>{% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in dash.trend_table | reverse %}
+                        <tr
+                            class="border-t border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                            <td class="px-5 py-2.5 font-medium">{{ row.date }}</td>
+                            {% for col in ['FII', 'PRO', 'DII', 'RETAIL'] %}
+                            <td class="px-4 py-2.5 text-right font-mono font-semibold {{ TXT[row[col].color] }}">{{
+                                row[col].value }}</td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="card">
+            <div class="card-head">
+                <div>
+                    <h2 class="card-title">Participant Aggression</h2>
+                    <p class="card-sub">Day-over-day change in blended bias, in percentage points &middot; green =
+                        turning bullish, red = turning bearish</p>
+                </div>
+            </div>
+            <div id="heat-aggr" class="p-4 overflow-x-auto"></div>
+        </div>
+    </section>
+
+    {# ============================ OPTION CHAIN (disabled) ============================
+    Switched off with ENABLE_OPTION_CHAIN = False in app.py. Flip it to True to bring the tab,
+    the PCR card and the live option-chain panel back.
+    #}
+    {% if show_option_chain %}
+    <section id="pane-options" data-pane class="hidden">
+        <div id="oc-root" class="card p-8 text-center text-sm text-slate-500 dark:text-slate-400">Loading live option
+            chain&hellip;</div>
+    </section>
+    {% endif %}
+
+    {% else %}
+    <!-- Empty state -->
+    <div class="card p-12 text-center max-w-xl mx-auto mt-10">
+        <div class="w-12 h-12 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-4">
+            <svg class="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" stroke-width="1.5"
+                viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+        </div>
+        <h2 class="text-base font-semibold">No data available</h2>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">NSE publishes participant-wise F&amp;O data after
+            about 7 PM IST on trading days.</p>
+        <a href="/"
+            class="mt-5 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors">Load
+            latest</a>
+    </div>
+    {% endif %}
+
+    {% include 'disclaimer.html' %}
 </div>
-{% endcall %}
-{% endif %}
+{% endblock %}
 
-{# Auto-refresh countdown #}
-<div id="refresh-indicator" class="flex items-center justify-end gap-1.5 text-[10px] text-gray-400 dark:text-gray-500 pr-1">
-    <svg id="refresh-spin" class="w-3 h-3 hidden animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-    </svg>
-    <span id="refresh-countdown"></span>
-</div>
-
-{% endif %}{# end if charts #}
-
-{% include 'disclaimer.html' %}
-
-</div>{# end main space-y #}
-
+{% block scripts %}
 <script>
-// ══════════════════════════════════════════
-// ACCORDION
-// ══════════════════════════════════════════
-function toggleAccordion(id) {
-    const body    = document.getElementById('body-' + id);
-    const chevron = document.getElementById('chevron-' + id);
-    if (!body) return;
-    const isHidden = body.classList.contains('hidden');
-    body.classList.toggle('hidden', !isHidden);
-    if (chevron) chevron.classList.toggle('rotate-180', isHidden);
-}
+    /* ---------- shared helpers ---------- */
+    const DASH = {{ (dash.payload if dash else none) | tojson }};
+    const AUTO_REFRESH = {{ 'true' if auto_refresh else 'false' }};
+    const OC_ENABLED = {{ 'true' if show_option_chain else 'false' }};
+    const nf = new Intl.NumberFormat('en-IN');
+    const compact = v => new Intl.NumberFormat('en-IN', { notation: 'compact', maximumFractionDigits: 1 }).format(v);
+    const signed = v => (v > 0 ? '+' : '') + nf.format(v);
+    const isDark = () => document.documentElement.classList.contains('dark');
+    const C = { green: '#10b981', red: '#f43f5e', blue: '#3b82f6', violet: '#8b5cf6', amber: '#f59e0b', indigo: '#6366f1' };
+    const PCOL = [C.blue, C.violet, C.amber, C.green];        /* FII, PRO, DII, RETAIL - same colour everywhere */
 
-// ══════════════════════════════════════════
-// MARKET STATUS PILL
-// ══════════════════════════════════════════
-function updateMarketPill() {
-    const ist  = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-    const mins = ist.getHours() * 60 + ist.getMinutes();
-    const isOpen = ist.getDay() >= 1 && ist.getDay() <= 5 && mins >= 555 && mins <= 930;
-    const dot  = document.getElementById('ms-dot');
-    const text = document.getElementById('ms-text');
-    if (dot)  dot.className  = 'w-1.5 h-1.5 rounded-full ' + (isOpen ? 'bg-emerald-400 animate-pulse' : 'bg-red-400');
-    if (text) text.textContent = isOpen ? 'Market Open' : 'Market Closed';
-}
-updateMarketPill();
-setInterval(updateMarketPill, 60000);
+    function theme() {
+        return isDark()
+            ? { text: '#94a3b8', grid: 'rgba(148,163,184,.14)', surface: '#0f172a' }
+            : { text: '#64748b', grid: 'rgba(100,116,139,.16)', surface: '#ffffff' };
+    }
+    function scales(tick, extra) {
+        const t = theme();
+        return {
+            x: { grid: { display: false }, ticks: { color: t.text }, border: { color: t.grid } },
+            y: Object.assign({ grid: { color: t.grid }, ticks: { color: t.text, callback: tick || compact }, border: { display: false } }, extra || {})
+        };
+    }
+    function options(opts) {
+        opts = opts || {};
+        const t = theme();
+        const fmt = opts.fmt || (v => nf.format(v));
+        return {
+            responsive: true, maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { position: 'bottom', labels: { color: t.text, usePointStyle: true, boxWidth: 8, padding: 16 } },
+                tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${fmt(c.parsed.y)}` } }
+            },
+            scales: scales(opts.tick, opts.y)
+        };
+    }
 
-// ══════════════════════════════════════════
-// AUTO-REFRESH (5 min during market hours)
-// ══════════════════════════════════════════
-let countdown = 300;
-(function startAutoRefresh() {
-    const countdownEl = document.getElementById('refresh-countdown');
-    const spinEl      = document.getElementById('refresh-spin');
-    if (!countdownEl) return;
-    setInterval(function () {
-        const ist  = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-        const mins = ist.getHours() * 60 + ist.getMinutes();
-        const isMarket = ist.getDay() >= 1 && ist.getDay() <= 5 && mins >= 555 && mins <= 930;
-        if (!isMarket) { countdownEl.textContent = ''; return; }
-        countdown--;
-        const m = Math.floor(countdown / 60), s = countdown % 60;
-        countdownEl.textContent = 'Refresh in ' + m + ':' + String(s).padStart(2, '0');
-        if (countdown <= 0) {
-            if (spinEl) spinEl.classList.remove('hidden');
-            countdownEl.textContent = 'Refreshing…';
-            window.location.href = window.location.href;
+    const charts = {};
+    function mount(id, config) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (charts[id]) charts[id].destroy();
+        charts[id] = new Chart(el, config);
+    }
+    const posNeg = arr => arr.map(v => (v >= 0 ? C.green : C.red));
+    const pctFmt = v => (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+
+    /* ---------- Overview ---------- */
+    let diffMode = 'contracts';
+    function setDiffMode(mode) { diffMode = mode; diffChart(); }
+    function diffChart() {
+        const d = DASH.diff, pctMode = diffMode === 'pct';
+        const callVals = pctMode ? d.call_pct : d.call, putVals = pctMode ? d.put_pct : d.put, netVals = pctMode ? d.net_pct : d.opt_net;
+        const fmt = pctMode ? pctFmt : signed;
+        /* Net marker is bullish when positive: Options Net = Call Diff - Put Diff */
+        mount('c-diff', {
+            type: 'bar',
+            data: {
+                labels: DASH.labels, datasets: [
+                    { label: 'Call Diff', data: callVals, backgroundColor: C.blue, borderRadius: 4, maxBarThickness: 36 },
+                    { label: 'Put Diff', data: putVals, backgroundColor: C.amber, borderRadius: 4, maxBarThickness: 36 },
+                    {
+                        type: 'line', label: 'Options net', data: netVals, showLine: false, pointStyle: 'rectRot', pointRadius: 7,
+                        pointBackgroundColor: posNeg(netVals), pointBorderColor: theme().surface, pointBorderWidth: 2
+                    }
+                ]
+            },
+            options: options({ fmt: fmt, tick: pctMode ? (v => v + '%') : compact })
+        });
+        ['contracts', 'pct'].forEach(m => {
+            const b = document.getElementById('diff-btn-' + m);
+            if (b) b.className = 'px-2.5 py-1 rounded-md ' + (m === diffMode ? 'bg-white dark:bg-slate-700 shadow-sm text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400');
+        });
+    }
+    function biasChart() {
+        const b = DASH.bias;
+        mount('c-bias', {
+            type: 'bar',
+            data: {
+                labels: DASH.labels, datasets: [
+                    { label: 'Futures bias', data: b.fut, backgroundColor: C.blue, borderRadius: 4, maxBarThickness: 32 },
+                    { label: 'Options bias', data: b.opt, backgroundColor: C.amber, borderRadius: 4, maxBarThickness: 32 },
+                    {
+                        type: 'line', label: 'Blended', data: b.blended, showLine: false, pointStyle: 'rectRot', pointRadius: 7,
+                        pointBackgroundColor: posNeg(b.blended), pointBorderColor: theme().surface, pointBorderWidth: 2
+                    }
+                ]
+            },
+            options: options({ fmt: pctFmt, tick: v => v + '%', y: { min: -100, max: 100 } })
+        });
+    }
+
+    /* ---------- Positioning ---------- */
+    function contribCharts() {
+        Object.entries(DASH.contrib).forEach(([title, c], i) => {
+            const h = document.getElementById('contrib-title-' + i);
+            if (h) h.textContent = title;
+            mount('c-contrib-' + i, {
+                type: 'bar',
+                data: {
+                    labels: DASH.labels, datasets: [
+                        { label: 'Long share', data: c.long_pct, backgroundColor: C.blue, borderRadius: 4, maxBarThickness: 26 },
+                        { label: 'Short share', data: c.short_pct, backgroundColor: C.amber, borderRadius: 4, maxBarThickness: 26 }
+                    ]
+                },
+                options: options({ fmt: v => v.toFixed(1) + '%', tick: v => v + '%', y: { min: 0, max: 100 } })
+            });
+        });
+    }
+    function netContribChart() {
+        const names = Object.keys(DASH.contrib);
+        mount('c-netcontrib', {
+            type: 'bar',
+            data: {
+                labels: names, datasets: DASH.labels.map((lbl, i) => ({
+                    label: lbl, data: names.map(n => DASH.contrib[n].net_pct[i]), backgroundColor: PCOL[i], borderRadius: 4, maxBarThickness: 26
+                }))
+            },
+            options: options({ fmt: pctFmt, tick: v => v + '%' })
+        });
+    }
+    function longPctChart() {
+        const lp = DASH.long_pct, colors = [C.blue, C.violet, C.amber];
+        const sets = Object.entries(lp).map(([label, data], i) => ({ label, data, backgroundColor: colors[i], borderRadius: 4, maxBarThickness: 26 }));
+        sets.push({ type: 'line', label: 'Balanced (50%)', data: DASH.labels.map(() => 50), borderColor: C.indigo, borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0 });
+        mount('c-longpct', {
+            type: 'bar', data: { labels: DASH.labels, datasets: sets },
+            options: options({ fmt: v => v.toFixed(1) + '%', tick: v => v + '%', y: { min: 0, max: 100 } })
+        });
+    }
+
+    /* ---------- Trends ---------- */
+    function fiiTrend() {
+        const d = DASH.fii_trend;
+        const ds = (label, data, color) => ({ label, data, borderColor: color, backgroundColor: color + '22', fill: true, tension: .3, borderWidth: 2, pointRadius: 3, pointHoverRadius: 5 });
+        mount('c-fii', {
+            type: 'line',
+            data: { labels: d.dates, datasets: [ds('Net futures', d.futures, C.blue), ds('Call diff', d.calls, C.green), ds('Put diff', d.puts, C.red)] },
+            options: options({ fmt: signed })
+        });
+    }
+    function rotation() {
+        const d = DASH.fii_rotation;
+        mount('c-rot', {
+            type: 'bar',
+            data: {
+                labels: d.dates, datasets: [
+                    { label: 'Index futures', data: d.index, backgroundColor: C.blue, borderRadius: 4 },
+                    { label: 'Stock futures', data: d.stock, backgroundColor: C.amber, borderRadius: 4 }
+                ]
+            },
+            options: options({ fmt: signed })
+        });
+    }
+
+    /* ---------- HTML heatmaps (lighter than a chart lib, fully theme-aware) ---------- */
+    function heat(elId, cols, rows, diverging, fmt) {
+        const el = document.getElementById(elId);
+        if (!el) return;
+        if (!rows.length || !cols.length) { el.innerHTML = '<p class="text-sm text-slate-500">Not enough sessions yet.</p>'; return; }
+        const dark = isDark();
+        const gmax = Math.max(1, ...rows.flatMap(r => r.values.map(Math.abs)));
+        const cmax = cols.map((_, j) => Math.max(1, ...rows.map(r => Math.abs(r.values[j]))));
+        let html = '<table class="w-full text-xs text-center" style="border-collapse:separate;border-spacing:4px"><thead><tr><th></th>';
+        cols.forEach(c => { html += `<th class="px-2 py-1.5 font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap">${c}</th>`; });
+        html += '</tr></thead><tbody>';
+        rows.forEach(r => {
+            html += `<tr><th class="text-left pr-3 py-1 font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap">${r.name}</th>`;
+            r.values.forEach((v, j) => {
+                const t = Math.min(1, Math.abs(v) / (diverging ? gmax : cmax[j]));
+                const a = 0.10 + 0.75 * t;
+                const rgb = diverging ? (v >= 0 ? '16,185,129' : '244,63,94') : '59,130,246';
+                const fg = a > 0.5 ? '#ffffff' : (dark ? '#e2e8f0' : '#0f172a');
+                html += `<td class="rounded-md px-2 py-3 font-mono font-semibold" style="background:rgba(${rgb},${a.toFixed(2)});color:${fg}">${fmt(v)}</td>`;
+            });
+            html += '</tr>';
+        });
+        el.innerHTML = html + '</tbody></table>';
+    }
+
+    /* ---------- lazy tab rendering ---------- */
+    const BUILD = DASH ? {
+        overview: () => { diffChart(); biasChart(); },
+        oichanges: () => { },                                   /* pure HTML tables, nothing to draw */
+        positioning: () => { contribCharts(); netContribChart(); longPctChart(); heat('heat-pos', DASH.heat.columns, DASH.heat.rows, false, v => nf.format(v)); },
+        trends: () => { fiiTrend(); rotation(); heat('heat-aggr', DASH.aggr.dates, DASH.aggr.rows, true, v => (v > 0 ? '+' : '') + v.toFixed(1) + ' pp'); }
+    } : {};
+    if (DASH && OC_ENABLED) BUILD.options = () => { };
+    const built = {};
+    function showTab(name) {
+        if (!BUILD[name]) name = 'overview';
+        document.querySelectorAll('[data-pane]').forEach(p => p.classList.toggle('hidden', p.id !== 'pane-' + name));
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+        if (!built[name]) { BUILD[name](); built[name] = true; }   /* build only when visible so canvases get real sizes */
+        try { history.replaceState(null, '', '#' + name); } catch (e) { }
+    }
+    if (DASH) {
+        document.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+        showTab((location.hash || '#overview').slice(1));
+        document.addEventListener('themechange', () => Object.keys(built).forEach(t => BUILD[t]()));
+    }
+
+    /* ---------- live data ---------- */
+    function renderNifty(n) {
+        const price = document.getElementById('nifty-price'), chg = document.getElementById('nifty-chg');
+        if (!n || !price) return;
+        price.textContent = n.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const up = n.change >= 0;
+        chg.textContent = `${up ? '▲' : '▼'} ${Math.abs(n.change).toFixed(2)} (${Math.abs(n.pct_change).toFixed(2)}%)`;
+        chg.className = 'font-mono font-medium ' + (up ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400');
+    }
+
+    /* Option-chain rendering (only used when ENABLE_OPTION_CHAIN = True in app.py) */
+    const TONE = { green: 'text-emerald-600 dark:text-emerald-400', red: 'text-rose-600 dark:text-rose-400', gray: 'text-slate-500 dark:text-slate-400' };
+    function oiList(items, color, title, dot) {
+        const max = Math.max(1, ...items.map(i => i.oi));
+        return `<div><p class="eyebrow mb-3 flex items-center gap-1.5"><span class="w-2 h-2 rounded-full" style="background:${dot}"></span>${title}</p>` +
+            items.map(i => `<div class="mb-2.5"><div class="flex justify-between text-xs mb-1"><span class="font-mono font-semibold">${i.strike}</span><span class="font-mono text-slate-500 dark:text-slate-400">${nf.format(i.oi)}</span></div>` +
+                `<div class="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800"><div class="h-1.5 rounded-full" style="width:${(i.oi / max * 100).toFixed(0)}%;background:${color}"></div></div></div>`).join('') + '</div>';
+    }
+    function renderOptions(oc) {
+        const root = document.getElementById('oc-root'), kpi = document.getElementById('kpi-pcr'), sub = document.getElementById('kpi-pcr-sub');
+        if (!oc) {
+            if (root) root.innerHTML = 'Live option-chain data is unavailable right now. NSE sometimes blocks requests from cloud servers; the participant data is unaffected.';
+            if (sub) sub.textContent = 'Live data unavailable';
+            return;
         }
-    }, 1000);
-})();
+        if (kpi) { kpi.textContent = oc.pcr.toFixed(2); kpi.className = 'mt-1.5 text-2xl font-bold font-mono tracking-tight ' + TONE[oc.pcr_color]; }
+        if (sub) sub.textContent = oc.pcr_signal + (oc.expiry ? ' · expiry ' + oc.expiry : '');
+        if (!root) return;
+        const diff = oc.spot ? Math.abs(oc.max_pain - oc.spot) : null;
+        root.className = 'card overflow-hidden';
+        root.innerHTML =
+            `<div class="card-head"><div><h2 class="card-title">Nifty Option Chain${oc.expiry ? ' · ' + oc.expiry : ''}</h2><p class="card-sub">Nearest expiry, strikes within ±10% of spot</p></div></div>` +
+            `<div class="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-slate-800">` +
+            `<div class="p-6"><p class="eyebrow">Put-Call Ratio</p><p class="mt-2 text-4xl font-bold font-mono ${TONE[oc.pcr_color]}">${oc.pcr.toFixed(2)}</p>` +
+            `<p class="mt-2 text-sm font-medium ${TONE[oc.pcr_color]}">${oc.pcr_signal}</p><p class="mt-1 text-xs text-slate-500 dark:text-slate-400">&ge;1.2 bullish &middot; &le;0.8 bearish</p></div>` +
+            `<div class="p-6"><p class="eyebrow">Max Pain</p><p class="mt-2 text-4xl font-bold font-mono text-blue-600 dark:text-blue-400">${oc.max_pain}</p>` +
+            `<p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Strike where option writers lose least.` +
+            (diff !== null ? ` Spot ${Math.round(oc.spot)} is <strong>${Math.round(diff)} pts</strong> ${oc.max_pain > oc.spot ? 'below' : 'above'} it.` : '') + `</p></div>` +
+            `<div class="p-6 grid grid-cols-2 gap-6">${oiList(oc.top_ce, C.red, 'Resistance (CE)', C.red)}${oiList(oc.top_pe, C.green, 'Support (PE)', C.green)}</div></div>`;
+    }
+    async function loadLive() {
+        try {
+            const r = await fetch('/api/live', { cache: 'no-store' });
+            const d = await r.json();
+            renderNifty(d.nifty);
+            if (OC_ENABLED) renderOptions(d.option_chain);
+            const s = document.getElementById('live-stamp');
+            if (s && d.as_of) s.textContent = 'Live data as of ' + d.as_of + ' IST';
+        } catch (e) { if (OC_ENABLED) renderOptions(null); }
+    }
 
-// ══════════════════════════════════════════
-// SCROLL-IN ANIMATIONS
-// ══════════════════════════════════════════
-const obs = new IntersectionObserver(function(entries) {
-    entries.forEach(function(e) {
-        if (e.isIntersecting) {
-            e.target.style.opacity  = '1';
-            e.target.style.transform = 'translateY(0)';
-        }
-    });
-}, { threshold: 0.06, rootMargin: '0px 0px -20px 0px' });
+    /* ---------- market status (IST) ---------- */
+    function marketOpen() {
+        const ist = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+        const m = ist.getHours() * 60 + ist.getMinutes();
+        return ist.getDay() >= 1 && ist.getDay() <= 5 && m >= 555 && m <= 930;   /* 09:15 - 15:30 */
+    }
+    function updatePill() {
+        const open = marketOpen();
+        const dot = document.getElementById('ms-dot'), text = document.getElementById('ms-text');
+        if (dot) dot.className = 'w-1.5 h-1.5 rounded-full ' + (open ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500');
+        if (text) text.textContent = open ? 'Market open' : 'Market closed';
+    }
+    updatePill(); setInterval(updatePill, 60000);
 
-document.querySelectorAll('.accordion-item').forEach(function(el) {
-    el.style.opacity   = '0';
-    el.style.transform = 'translateY(12px)';
-    el.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
-    obs.observe(el);
-});
+    loadLive();
+    if (AUTO_REFRESH) setInterval(() => { if (marketOpen()) loadLive(); }, 300000);
 </script>
 {% endblock %}
